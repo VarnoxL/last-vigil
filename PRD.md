@@ -66,7 +66,7 @@ This project is a game-like simulation of a haunted medieval town built around a
 
 - **VRAM co-residency** of a 1–3B and a 7–8B model on 8 GB is untested. Settled by the smoke-test rule in Technical approach. Embedding memory (T2) needs its own small model; if it doesn't fit, embeddings run on the CPU.
 - **Small-model quality.** 1–3B models may produce incoherent rumor rewrites. Mitigation: constrained/structured outputs and a Python eval harness; accept some silliness as a feature.
-- **Throughput.** Decision latency of 1–3 s per call and bursty rumor events could back up the queue. Needs a priority queue and a cheap fallback behavior; exact policy is unresolved.
+- **Throughput.** Measured at ~4.7 s per decision (≈750 decisions per real hour, serialized), slower than the 1–3 s originally estimated. Bursty rumor events could back up the queue; T1 calls should use shorter outputs, and Quick runs will give each agent only a handful of decisions. Needs a priority queue and a cheap fallback behavior; exact policy is unresolved.
 - **Promotion/demotion rules** (what counts as "narrative involvement") are not designed yet; deferred to Phase 8.
 - **Cult-member and investigator interaction UI** (free-text vs. choice menus) is not decided; to be settled when Phase 9 starts.
 - **Wire-protocol types** shared between Rust and TypeScript need one source of truth (e.g. generating TS types from Rust structs). Not decided; settle at the start of Phase 5.
@@ -78,8 +78,9 @@ This project is a game-like simulation of a haunted medieval town built around a
 ### Phase 1 — Toolchain and skeleton
 **Depends on:** none
 **Done when:** `cargo run` in `sim/` prints a tick counter, `python -m brain` answers a health check, and `npm run dev` in `client/` serves a blank canvas.
-- [ ] Install Rust toolchain (rustup), MSVC Build Tools, and Ollama; `cargo run` links
-- [ ] Agent smoke test (`brain/agent_smoke_test.py`): a T1 and a T2 persona each return a schema-valid rumor decision; record latency, tok/s, and VRAM, then apply the model rule (two models vs. one)
+- [x] Install Rust toolchain (rustup), MSVC Build Tools, and Ollama; `cargo run` links
+- [x] Agent smoke test (`brain/agent_smoke_test.py`): a T1 and a T2 persona each return a schema-valid rumor decision; record latency, tok/s, and VRAM, then apply the model rule (two models vs. one)
+  - Result 2026-10-17: PASS. Co-residency failed (Ollama evicts the 3B when the 8B loads; 8B alone uses 6.4 / 8 GB). **Model rule → one shared `qwen3:8b` for all tiers.** Warm 8B: ~4.7 s per decision, ~60 tok/s, 100% on GPU. Cold load ~30–70 s, so the brain must preload and keep the model alive.
 - [ ] Create `sim/` Cargo project, `brain/` Python package, `client/` Vite + TypeScript + Three.js project
 - [ ] Add `ASSETS.md` and a root `README.md` stub
 

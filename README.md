@@ -59,7 +59,7 @@ Each language does what it's best at.
 | `brain/` | Python | Prompting, structured output, memory retrieval, LoRA fine-tuning, evals |
 | `client/` | TypeScript | Three.js renderer, UI, role input layers |
 
-Models run locally through Ollama or llama.cpp on an RTX 3060 Ti (8 GB): a 1-3B model for townsfolk and a 7-8B model for key figures. If both don't fit side by side, every tier shares the 8B model and differs only in how often it thinks and how much it remembers. A smoke test (`python brain/agent_smoke_test.py`) measures this on your machine.
+Models run locally through Ollama on an RTX 3060 Ti (8 GB). The smoke test (`python brain/agent_smoke_test.py`) found that a 3B and an 8B model can't stay loaded side by side, so every thinking tier shares one `qwen3:8b`. Tiers differ in how often they think, how much they remember, and whether they reflect. Measured speed: about 4.7 s per decision, 60 tok/s, entirely on the GPU.
 
 ## Build order
 
