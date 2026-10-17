@@ -366,7 +366,7 @@ def hud(img, days_txt, role, doom_ratio, rumor_lines=None, tier_legend=True, tit
     if tier_legend:
         panel(d, (w - 220, h - 100, w - 14, h - 14))
         d.text((w - 208, h - 94), "AGENT TIERS", font=fs, fill=(200, 190, 220))
-        for i, (t, label) in enumerate(((2, "T2 key figure  7-8B"), (1, "T1 townsfolk  1-3B"), (0, "T0 crowd   rules"))):
+        for i, (t, label) in enumerate(((2, "T2 key figure memory"), (1, "T1 townsfolk  events"), (0, "T0 crowd      rules"))):
             y = h - 74 + i * 20
             d.ellipse([w - 206, y + 2, w - 194, y + 12], fill=TIER_COL[t])
             d.text((w - 186, y), label, font=fs, fill=(230, 230, 240))
@@ -497,40 +497,203 @@ def sprite_big(drawer, scale=10, w=14, h=18):
     return im.resize((w * scale, h * scale), Image.NEAREST)
 
 
+# ---------- hue-shifted shading (shadows cooler, highlights warmer) ----------
+def shade(c, k=0.7):
+    return (int(c[0] * k * 0.9), int(c[1] * k * 0.95), min(255, int(c[2] * k * 1.1 + 10)))
+
+
+def lit(c, k=1.2):
+    return (min(255, int(c[0] * k + 14)), min(255, int(c[1] * k + 8)), min(255, int(c[2] * k)))
+
+
+def person(d, cx, fy, robe, hair=(74, 50, 36), skin=(232, 190, 150), hood=False, ring=None):
+    """17px-tall villager: self-coloured outline, light from the upper left."""
+    d.ellipse([cx - 5, fy - 1, cx + 5, fy + 2], fill=(40, 36, 46))  # drop shadow
+    if ring:
+        d.ellipse([cx - 6, fy - 2, cx + 6, fy + 2], outline=ring)
+    ol = shade(robe, 0.4)
+    rect(d, cx - 4, fy - 10, cx + 4, fy - 1, robe, ol)  # robe
+    d.line([(cx - 3, fy - 9), (cx - 3, fy - 2)], fill=lit(robe))  # lit left edge
+    rect(d, cx + 2, fy - 9, cx + 3, fy - 2, shade(robe, 0.75))  # shaded right side
+    d.line([(cx - 3, fy - 6), (cx + 3, fy - 6)], fill=(96, 62, 36))  # belt
+    d.point((cx - 5, fy - 4), fill=skin)  # hands
+    d.point((cx + 5, fy - 4), fill=shade(skin, 0.8))
+    rect(d, cx - 2, fy, cx - 1, fy, (50, 36, 30))  # feet
+    rect(d, cx + 1, fy, cx + 2, fy, (50, 36, 30))
+    if hood:
+        rect(d, cx - 3, fy - 17, cx + 3, fy - 10, robe, ol)
+        d.line([(cx - 2, fy - 16), (cx - 2, fy - 12)], fill=lit(robe))
+        rect(d, cx - 1, fy - 14, cx + 1, fy - 11, (26, 18, 30))  # face in shadow
+        d.point((cx, fy - 13), fill=(220, 60, 60))
+    else:
+        rect(d, cx - 3, fy - 16, cx + 3, fy - 10, skin, shade(skin, 0.45))
+        rect(d, cx - 3, fy - 17, cx + 3, fy - 15, hair, shade(hair, 0.5))
+        d.point((cx - 1, fy - 13), fill=(30, 22, 30))
+        d.point((cx + 1, fy - 13), fill=(30, 22, 30))
+        d.point((cx + 2, fy - 11), fill=shade(skin, 0.85))
+
+
+def cobble(d, w, h, rng, y0=0, stones=((128, 120, 124), (118, 112, 120), (136, 128, 128))):
+    rect(d, 0, y0, w, h, (70, 64, 74))
+    for y in range(y0, h, 5):
+        off = 3 if (y // 5) % 2 else 0
+        for x in range(-off, w, 7):
+            c = rng.choice(stones)
+            rect(d, x, y, x + 5, y + 3, c)
+            d.line([(x, y), (x + 5, y)], fill=lit(c, 1.1))
+            d.line([(x, y + 3), (x + 5, y + 3)], fill=shade(c, 0.8))
+
+
+def stall(d, x, y):
+    for px in (x, x + 23):
+        rect(d, px, y + 3, px + 1, y + 18, (96, 62, 36))
+    for i in range(0, 24, 4):
+        c = (176, 52, 48) if (i // 4) % 2 == 0 else (232, 214, 180)
+        rect(d, x + i, y, x + i + 3, y + 5, c)
+        rect(d, x + i + 1, y + 6, x + i + 2, y + 6, c)  # scalloped edge
+    d.line([(x, y + 7), (x + 24, y + 7)], fill=(60, 50, 60))  # awning shadow
+    rect(d, x - 1, y + 13, x + 25, y + 17, (128, 84, 48), (70, 44, 28))
+    for bx in (x + 3, x + 9, x + 15):
+        d.ellipse([bx, y + 10, bx + 5, y + 13], fill=(200, 146, 74), outline=(120, 76, 40))
+
+
+def lantern(d, x, y):
+    rect(d, x, y - 14, x + 1, y, (50, 40, 46))
+    rect(d, x - 1, y - 19, x + 2, y - 15, (255, 210, 110), (60, 44, 40))
+    return (x, y - 17)
+
+
+def glow_pass(base, pts, tint):
+    base = ImageChops.multiply(base, Image.new("RGB", base.size, tint))
+    g = Image.new("RGB", base.size, (0, 0, 0))
+    gd = ImageDraw.Draw(g)
+    for (x, y), r, col in pts:
+        gd.ellipse([x - r, y - r, x + r, y + r], fill=col)
+    return ImageChops.screen(base, g.filter(ImageFilter.GaussianBlur(4)))
+
+
+def vignette_t0(rng):
+    im = Image.new("RGB", (120, 70))
+    d = ImageDraw.Draw(im)
+    cobble(d, 120, 70, rng)
+    stall(d, 8, 8)
+    crowd = [(14, 38), (40, 30), (58, 46), (78, 34), (96, 52), (30, 60), (68, 64), (104, 28), (88, 66)]
+    people = sorted((y, x, i) for i, (x, y) in enumerate(crowd))
+    for y, x, i in people:
+        cult = i == 4
+        person(d, x, y, (96, 40, 110) if cult else ROBES[i % 6], hood=cult, ring=TIER_COL[0])
+    return glow_pass(im, [], (235, 228, 240))
+
+
+def vignette_t1(rng):
+    im = Image.new("RGB", (120, 70))
+    d = ImageDraw.Draw(im)
+    cobble(d, 120, 70, rng)
+    rect(d, 0, 0, 120, 14, (60, 92, 54))  # verge
+    for _ in range(60):
+        d.point((rng.randrange(120), rng.randrange(14)), fill=rng.choice([(74, 112, 62), (50, 80, 46)]))
+    well(d, 104, 32)
+    lp = lantern(d, 10, 44)
+    person(d, 24, 66, (140, 140, 150), ring=TIER_COL[0])
+    person(d, 46, 58, (160, 130, 70), hair=(150, 90, 40), ring=TIER_COL[1])
+    person(d, 74, 60, (80, 110, 150), ring=TIER_COL[1])
+    return glow_pass(im, [(lp, 10, (150, 110, 50))], (190, 186, 222))
+
+
+def vignette_t2(rng):
+    im = Image.new("RGBA", (120, 70))
+    d = ImageDraw.Draw(im)
+    cobble(d, 120, 70, rng, stones=((104, 98, 110), (96, 92, 104), (112, 104, 114)))
+    for y in range(0, 42, 4):  # church wall, brick bond
+        off = 4 if (y // 4) % 2 else 0
+        for x in range(-off, 120, 8):
+            c = rng.choice([(138, 136, 150), (128, 126, 142), (146, 142, 154)])
+            rect(d, x, y, x + 7, y + 3, c, shade(c, 0.7))
+    rect(d, 0, 42, 120, 45, (90, 86, 100), (60, 56, 70))  # step
+    d.pieslice([16, 16, 36, 36], 180, 360, fill=(84, 52, 30), outline=OUTLINE)  # arched door
+    rect(d, 16, 26, 36, 42, (84, 52, 30), OUTLINE)
+    d.line([(26, 18), (26, 42)], fill=(60, 36, 22))
+    d.point((30, 32), fill=(220, 190, 90))
+    d.pieslice([72, 4, 88, 20], 180, 360, fill=(30, 24, 44), outline=OUTLINE)  # stained glass
+    rect(d, 72, 12, 88, 30, (30, 24, 44), OUTLINE)
+    for i, c in enumerate([(150, 70, 200), (220, 70, 70), (240, 190, 80), (90, 120, 220)]):
+        rect(d, 74 + (i % 2) * 7, 13 + (i // 2) * 8, 79 + (i % 2) * 7, 19 + (i // 2) * 8, c)
+    cands = [(48, 56), (70, 56)]
+    for cx, cy in cands:
+        rect(d, cx, cy - 6, cx + 1, cy, (230, 224, 200))
+        d.point((cx, cy - 7), fill=(255, 220, 120))
+    person(d, 58, 62, (150, 24, 40), hood=True, ring=TIER_COL[2])
+    person(d, 96, 64, (96, 40, 110), hood=True, ring=TIER_COL[0])
+    layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
+    ghost(layer, 104, 30, None, alpha=110)
+    im = Image.alpha_composite(im, layer).convert("RGB")
+    pts = [((c[0], c[1] - 7), 8, (170, 120, 50)) for c in cands] + [((80, 18), 12, (90, 50, 120))]
+    return glow_pass(im, pts, (160, 150, 196))
+
+
 def make_tiers():
-    W_, H_ = 1240, 560
+    W_, H_ = 1240, 740
+    s = 3
     im = Image.new("RGB", (W_, H_), (14, 10, 22))
     d = ImageDraw.Draw(im)
     d.text((24, 16), "AGENT TIERS - cheap crowd, expensive stars", font=font(22, True), fill=(230, 210, 255))
+    d.text((24, 48), "One model on one GPU. Tiers differ in how often an agent thinks and how much it remembers.",
+           font=font(14), fill=(170, 160, 200))
+    rng = random.Random(11)
     cols = [
-        (0, "TIER 0  CROWD", "30-50 agents", "no LLM", ["Rust utility-AI state machines", "beliefs are numbers", "canned barks", "~2 ms / tick for everyone"], (150, 150, 150)),
-        (1, "TIER 1  TOWNSFOLK", "10-15 agents", "1-3B local model", ["event-driven only", "hear a rumor -> believe? repeat?", "rewrites wording per hop", "~1 s / decision"], (90, 170, 255)),
-        (2, "TIER 2  KEY FIGURES", "3-5 agents", "7-8B local model", ["memory retrieval + reflection", "prophet, elder, medium, ghost", "plans, doubts, panics", "~2-3 s / decision"], (255, 200, 60)),
+        (0, "TIER 0  CROWD", "30-50 agents  ·  no model", vignette_t0(rng),
+         ["Rust utility-AI, no model calls", "beliefs are just numbers", "repeats canned barks", "whole crowd in ~2 ms / tick"]),
+        (1, "TIER 1  TOWNSFOLK", "10-15 agents  ·  short prompts", vignette_t1(rng),
+         ["thinks only when something happens", "hears a rumor: believe? repeat?", "rewords the claim in its own voice", "a few calls per in-game day"]),
+        (2, "TIER 2  KEY FIGURES", "3-5 agents  ·  full memory", vignette_t2(rng),
+         ["memory retrieval + reflection", "prophet, elder, medium", "plans, doubts, panics", "first in line for the GPU"]),
     ]
-    cw = 390
-    for i, (t, name, count, model, bullets, c) in enumerate(cols):
+    cw, top = 390, 84
+    fb = font(12)
+    for i, (t, name, sub, vig, bullets) in enumerate(cols):
+        c = TIER_COL[t]
         x = 24 + i * (cw + 20)
-        d.rounded_rectangle([x, 70, x + cw, 520], 12, fill=(24, 18, 38), outline=c, width=3)
-        d.text((x + 18, 84), name, font=font(20, True), fill=c)
-        d.text((x + 18, 114), f"{count}   {model}", font=font(14), fill=(220, 220, 235))
-        # sprite
-        def draw(dd, t=t):
-            robe = [(140, 140, 150), (80, 110, 150), (150, 24, 40)][t]
-            agent(dd, 7, 15, robe, hood=(t == 2), tier=t)
-        spr = sprite_big(draw, 10)
-        im.paste(spr, (x + cw - 160, 130), spr)
-        # crowd count dots for tier 0 / 1
-        for j in range(12 if t == 0 else (6 if t == 1 else 3)):
-            def dr(dd, j=j, t=t):
-                agent(dd, 7, 15, ROBES[j % 6], tier=t)
-            s2 = sprite_big(dr, 3)
-            im.paste(s2, (x + 18 + j * 30, 340), s2)
+        d.rounded_rectangle([x, top, x + cw, top + 500], 12, fill=(24, 18, 38), outline=c, width=3)
+        d.text((x + 18, top + 14), name, font=font(20, True), fill=c)
+        d.text((x + 18, top + 44), sub, font=font(14), fill=(220, 220, 235))
+        v = upscale(vig, s)
+        vd = ImageDraw.Draw(v)
+        if t == 0:
+            bubble(vd, 10, 70, "Fresh bread!", fb)
+            bubble(vd, 236, 118, "Repent!", fb)
+        elif t == 1:
+            bubble(vd, 112, 118, "They say the prophet slips out the east gate at midnight...", fb, 150)
+            bubble(vd, 210, 140, "believe? repeat?", fb, 120)
+        else:
+            bubble(vd, 120, 136, "I must play my part, even if the script is written in blood.", fb, 220)
+        im.paste(v, (x + 15, top + 74))
+        d.rectangle([x + 14, top + 73, x + 15 + v.width, top + 74 + v.height], outline=shade(c, 0.8), width=2)
         for j, b in enumerate(bullets):
-            d.text((x + 18, 170 + j * 30), "- " + b, font=font(15), fill=(235, 235, 245))
-    d.text((24, 530), "dynamic promotion/demotion: an agent central to a rumor chain moves up a tier, and drops back when it quiets down", font=font(14), fill=(255, 220, 140))
-    # promote arrows
-    for ax in (24 + 390 + 4, 24 + 2 * 410 - 12):
-        d.polygon([(ax, 300), (ax + 22, 300), (ax + 22, 290), (ax + 40, 310), (ax + 22, 330), (ax + 22, 320), (ax, 320)], fill=(255, 220, 140))
+            d.text((x + 18, top + 304 + j * 28), "- " + b, font=font(15), fill=(235, 235, 245))
+        if t == 2:
+            d.text((x + 18, top + 420), "speech bubble: real qwen3:8b output", font=font(12), fill=(150, 140, 180))
+            d.text((x + 18, top + 436), "from the Phase 1 smoke test", font=font(12), fill=(150, 140, 180))
+    # promotion arrows between cards
+    for ax in (24 + cw + 1, 24 + 2 * cw + 21):
+        d.polygon([(ax, 230), (ax + 8, 230), (ax + 8, 220), (ax + 18, 240), (ax + 8, 260), (ax + 8, 250), (ax, 250)],
+                  fill=(255, 220, 140))
+    # what drives each column
+    by = top + 530
+    d.rounded_rectangle([24, by, 24 + cw, by + 70], 10, fill=(24, 18, 38), outline=(110, 110, 120), width=2)
+    d.text((40, by + 12), "RUST SIM", font=font(15, True), fill=(255, 150, 90))
+    d.text((40, by + 38), "every tick, deterministic, no GPU", font=font(13), fill=(220, 220, 235))
+    bx0, bx1 = 24 + cw + 20, 24 + 3 * cw + 40
+    for cx in (bx0 + cw // 2, bx0 + cw + 20 + cw // 2):
+        d.line([(cx, top + 500), (cx, by)], fill=(200, 160, 255), width=3)
+    d.rounded_rectangle([bx0, by, bx1, by + 70], 10, fill=(30, 20, 48), outline=(200, 160, 255), width=2)
+    d.text((bx0 + 16, by + 12), "ONE SHARED BRAIN   qwen3:8b via Ollama", font=font(15, True), fill=(200, 160, 255))
+    d.text((bx0 + 16, by + 38), "~4.7 s per decision  ·  ~750 decisions / hour  ·  VRAM", font=font(13), fill=(220, 220, 235))
+    vx = bx0 + 16 + int(d.textlength("~4.7 s per decision  ·  ~750 decisions / hour  ·  VRAM ", font=font(13)))
+    d.rectangle([vx, by + 40, vx + 160, by + 52], outline=(200, 160, 255))
+    d.rectangle([vx + 2, by + 42, vx + 2 + int(156 * 6.4 / 8), by + 50], fill=(170, 120, 230))
+    d.text((vx + 170, by + 38), "6.4 / 8 GB", font=font(13), fill=(220, 220, 235))
+    d.text((24, H_ - 30), "Promotion / demotion: an agent at the centre of a rumor chain moves up a tier, then drops back when it quiets down.",
+           font=font(14), fill=(255, 220, 140))
     save(im, "agent-tiers.png")
 
 
@@ -561,8 +724,8 @@ def make_architecture():
     d.text((24, 16), "ONE SIM, THREE LANGUAGES", font=font(22, True), fill=(230, 210, 255))
     box(d, (24, 90, 334, 330), "TypeScript  client/", ["Three.js pixel renderer", "ortho camera, nearest sampling", "fog / ghost / light shaders", "role input layers:", "  observer  god  cult  investigator"], (90, 170, 255))
     box(d, (464, 90, 774, 330), "Rust  sim/", ["world, tick loop, seeded RNG", "Tier 0 utility-AI", "rumor propagation + ancestry", "doomsday clock, hidden truth", "tier scheduler + promotion"], (255, 150, 90))
-    box(d, (894, 90, 1216, 330), "Python  brain/", ["prompts + structured output", "embedding memory retrieval", "LoRA fine-tune for voice", "eval harness + notebooks", "rumor-spread analysis"], (130, 220, 130))
-    box(d, (894, 400, 1216, 490), "Ollama / llama.cpp", ["1-3B + 7-8B local models, RTX 3060 Ti"], (200, 160, 255))
+    box(d, (894, 90, 1216, 330), "Python  brain/", ["prompts + structured output", "embedding memory retrieval", "eval harness + notebooks", "rumor-spread analysis", "(later) LoRA fine-tune"], (130, 220, 130))
+    box(d, (894, 400, 1216, 490), "Ollama", ["one qwen3:8b for T1 + T2, RTX 3060 Ti"], (200, 160, 255))
     arrow(d, (334, 190), (464, 190), "websocket")
     arrow(d, (464, 250), (334, 250), "snapshots")
     arrow(d, (774, 190), (894, 190), "decision req")
