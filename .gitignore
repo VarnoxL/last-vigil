@@ -1,0 +1,7 @@
+﻿__pycache__/
+*.pyc
+/sim/target/
+node_modules/
+.venv/
+.env
+
