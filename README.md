@@ -19,6 +19,10 @@ Same town, same seed, three moments. Calm with 30 days left, panic at 3 days, an
 
 ![Doomsday progression](docs/img/doomsday-progression.png)
 
+## Short runs, long runs, and replays
+
+You choose a run's length before it starts: **Quick** (~10–15 min) for showing it off, **Standard** (~30–45 min) for watching a full arc, or **Long** (hours) for gathering data. Every model decision is written to a replay log, so any run, including a strange one, can be played back exactly with no GPU needed.
+
 ## Rumors you can trace
 
 A rumor is a structured claim (subject, claim, source, confidence, hop count) that the Rust sim tracks exactly. At each hop a language model rewrites the wording, so the *ancestry* stays queryable while the *text* drifts like a game of telephone. A ghost's true omen can end up as "the prophet is the demon!" five hops later.
@@ -55,7 +59,7 @@ Each language does what it's best at.
 | `brain/` | Python | Prompting, structured output, memory retrieval, LoRA fine-tuning, evals |
 | `client/` | TypeScript | Three.js renderer, UI, role input layers |
 
-Models run locally through Ollama or llama.cpp on an RTX 3060 Ti (8 GB): a 1-3B model for townsfolk and a 7-8B model for key figures.
+Models run locally through Ollama or llama.cpp on an RTX 3060 Ti (8 GB): a 1-3B model for townsfolk and a 7-8B model for key figures. If both don't fit side by side, every tier shares the 8B model and differs only in how often it thinks and how much it remembers. A smoke test (`python brain/agent_smoke_test.py`) measures this on your machine.
 
 ## Build order
 
@@ -69,8 +73,13 @@ Models run locally through Ollama or llama.cpp on an RTX 3060 Ti (8 GB): a 1-3B 
 8. Tier promotion/demotion
 9. Cult member role
 10. Investigator role and endings
+11. *(stretch)* In-character LoRA fine-tune trained on replay logs
 
-Details, completion criteria, and risks are in [`PRD.md`](PRD.md).
+Details, completion criteria, and risks are in [`PRD.md`](PRD.md). Project vocabulary (claim, hop, tier, omen...) is defined in [`GLOSSARY.md`](GLOSSARY.md), and the reasoning behind decisions that are hard to reverse is in [`docs/adr/`](docs/adr/).
+
+## Working on this with Claude Code
+
+The repo enables the [Matt Pocock skills](https://github.com/mattpocock/skills) plugin in `.claude/settings.json`. When you open the repo, Claude Code prompts you to install it. `/teach`, `/tdd`, `/diagnosing-bugs`, and `/domain-modeling` are the most useful ones here.
 
 ## Regenerating the concept art
 

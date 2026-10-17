@@ -34,6 +34,8 @@ This project is a game-like simulation of a haunted medieval town built around a
 - Two runs with different seeds produce different hidden truths and visibly different town behavior near zero.
 - Tier 1 + Tier 2 model calls keep the sim from stalling: no agent decision blocks the tick loop; p95 decision latency is shown in a debug overlay.
 - The same seed with models stubbed reproduces identical sim state (determinism of the Rust core).
+- A live run's replay log replays to an identical final state with no models loaded.
+- A run can be started with any of the three run-length presets (Quick, Standard, Long) from the start screen.
 - All four roles are playable in one build, switchable from a start screen.
 - README contains real rendered images of the world, produced by the project's own tooling.
 
@@ -44,7 +46,7 @@ This project is a game-like simulation of a haunted medieval town built around a
 | Piece | Language | Why |
 |---|---|---|
 | `sim/` world state, tick loop, rumor propagation, spatial hearing, tier scheduling, promotion | **Rust** | Deterministic, fast for 50+ agents, and the learning goal. Runs as a native server so it is debuggable and not tied to the browser. |
-| `brain/` model gateway, prompt templates, eval harness, embedding memory retrieval, LoRA fine-tune of a small model for in-character speech, rumor-spread analysis notebooks | **Python** | Best ML tooling. Only needs to speak HTTP to Ollama/llama.cpp and a local socket to the sim. |
+| `brain/` model gateway, prompt templates, eval harness, embedding memory retrieval, rumor-spread analysis notebooks (and later a LoRA fine-tune, Phase 11) | **Python** | Best ML tooling. Only needs to speak HTTP to Ollama/llama.cpp and a local socket to the sim. |
 | `client/` Three.js renderer, UI, role input layers, websocket client | **TypeScript** | Browser-native, shared types for the wire protocol. |
 
 - **Sim ↔ client:** websocket, JSON snapshots/deltas. **Sim ↔ brain:** local HTTP (sim sends decision requests, brain returns structured results). Rust never calls the LLM directly; this keeps all prompting in Python.
@@ -54,18 +56,21 @@ This project is a game-like simulation of a haunted medieval town built around a
 - **Ghosts.** Know past events, cannot speak plainly. They emit omens, dreams, and speak through mediums; each message enters the rumor engine as a new claim with low clarity.
 - **Doomsday countdown.** A global clock agents are aware of. Fear, loyalty, and belief parameters shift as it approaches; behaviors include panic, hoarding, flight, penance, denial, mutiny. At zero, outcome follows `doom_is_real`.
 - **Roles.** Observer (no input), God (whisper a claim to an agent or area), Cult Member (walk, talk, influence), Investigator (question agents, collect unreliable testimony, accuse). All roles are input layers over the same sim protocol; the sim treats human actions as events.
-- **Models.** Ollama or llama.cpp server. 8 GB VRAM fits a 7–8B Q4 (~5 GB); a 1–3B alongside it is tight, so co-residency is tested early and model swapping is the fallback.
+- **Run length.** Chosen per run on the start screen from three presets: Quick (~10–15 min), Standard (~30–45 min), Long (hours). A preset is just two numbers, countdown days and real minutes per in-game day. The brain's throughput is fixed (one GPU, roughly 1–3 s per call), so a longer run means more decisions per agent per day, not a faster GPU. Long runs exist for gathering data.
+- **Replay log.** Live model replies are nondeterministic (latency and wording vary), so the sim appends every brain reply, along with the tick it was applied on, to a per-run log. In replay mode the sim reads replies from the log instead of calling the brain, which reproduces the run exactly without a GPU. This is used for debugging, re-watching good runs, README screenshots, and Phase 11 training data. It requires two rules in Rust: brain replies are applied only at tick boundaries, in a fixed order, and sim state never iterates a `HashMap` (use `BTreeMap`/`Vec`). See ADR 0003.
+- **Models.** Ollama or llama.cpp server. 8 GB VRAM fits a 7–8B Q4 (~5 GB), but the browser and Windows also take about 1 GB. The tier-to-model mapping lives in brain config, and the Phase 1 smoke test picks it with this rule: if the 3B and 8B models both sit fully on the GPU with at least 1 GB to spare, keep two models; otherwise all tiers share one (qwen3:8b, or qwen3:4b if speed is poor) and tiers differ only by call frequency, context, memory, and reflection.
 - **Art.** CC0 tilesets and sprite packs. Orthographic Three.js camera with nearest-neighbor textures; fog, lighting, and ghost transparency done in shaders.
 - **Why not all one language:** the author explicitly wants to learn all three, and each has a genuine best-fit job above.
 
 ## Risks / open questions
 
-- **VRAM co-residency** of a 1–3B and a 7–8B model on 8 GB is untested. Fallback: sequential model swaps or a single mid-size model.
+- **VRAM co-residency** of a 1–3B and a 7–8B model on 8 GB is untested. Settled by the smoke-test rule in Technical approach. Embedding memory (T2) needs its own small model; if it doesn't fit, embeddings run on the CPU.
 - **Small-model quality.** 1–3B models may produce incoherent rumor rewrites. Mitigation: constrained/structured outputs and a Python eval harness; accept some silliness as a feature.
 - **Throughput.** Decision latency of 1–3 s per call and bursty rumor events could back up the queue. Needs a priority queue and a cheap fallback behavior; exact policy is unresolved.
-- **Promotion/demotion rules** (what counts as "narrative involvement") are not designed yet; deferred to Phase 5.
-- **Cult-member and investigator interaction UI** (free-text vs. choice menus) is not decided; to be settled when Phase 7 starts.
-- **Rust is not yet installed** on the author's machine (checked 2026-10-17); Phase 1 starts with toolchain setup.
+- **Promotion/demotion rules** (what counts as "narrative involvement") are not designed yet; deferred to Phase 8.
+- **Cult-member and investigator interaction UI** (free-text vs. choice menus) is not decided; to be settled when Phase 9 starts.
+- **Wire-protocol types** shared between Rust and TypeScript need one source of truth (e.g. generating TS types from Rust structs). Not decided; settle at the start of Phase 5.
+- **Toolchain:** Rust 1.99.1 and Ollama 0.40.5 are installed (2026-10-17), but Rust on Windows also needs the MSVC Build Tools linker, which was still installing at the time of writing.
 - **Asset licensing:** each chosen CC0 pack must be recorded in `ASSETS.md` before use.
 
 ## Phases
@@ -73,10 +78,10 @@ This project is a game-like simulation of a haunted medieval town built around a
 ### Phase 1 — Toolchain and skeleton
 **Depends on:** none
 **Done when:** `cargo run` in `sim/` prints a tick counter, `python -m brain` answers a health check, and `npm run dev` in `client/` serves a blank canvas.
-- [ ] Install Rust toolchain (rustup) and Ollama
+- [ ] Install Rust toolchain (rustup), MSVC Build Tools, and Ollama; `cargo run` links
+- [ ] Agent smoke test (`brain/agent_smoke_test.py`): a T1 and a T2 persona each return a schema-valid rumor decision; record latency, tok/s, and VRAM, then apply the model rule (two models vs. one)
 - [ ] Create `sim/` Cargo project, `brain/` Python package, `client/` Vite + TypeScript + Three.js project
 - [ ] Add `ASSETS.md` and a root `README.md` stub
-- [ ] Verify one 7–8B model loads and generates on the 3060 Ti
 
 ### Phase 2 — Headless sim core (Tier 0 only)
 **Depends on:** Phase 1
@@ -84,7 +89,7 @@ This project is a game-like simulation of a haunted medieval town built around a
 - [ ] World map, tiles, buildings, and a pathfinding grid
 - [ ] Agent state: needs, position, beliefs as numbers, utility-AI action selection
 - [ ] Seeded RNG and a determinism test
-- [ ] Doomsday clock and hidden-truth generator (`doom_is_real` and truth fragments)
+- [ ] Doomsday clock driven by a run-length preset (days, real minutes per day) and the hidden-truth generator (`doom_is_real` and truth fragments)
 
 ### Phase 3 — Rumor engine
 **Depends on:** Phase 2
@@ -99,9 +104,10 @@ This project is a game-like simulation of a haunted medieval town built around a
 **Done when:** with models live, a T1 agent hearing a rumor produces a structured believe/repeat decision plus rewritten wording, and a T2 agent produces a reflection that changes its later behavior, without stalling the tick loop.
 - [ ] Python gateway to Ollama with structured (schema-constrained) outputs
 - [ ] Sim ↔ brain protocol and async request queue with priorities and timeouts
+- [ ] Replay log: record every applied brain reply with its tick; replay mode reads from the log; test that a live run replays to an identical final state
 - [ ] T1 event-driven decisions and T2 memory retrieval + reflection
 - [ ] Eval harness comparing prompts and models on rumor-rewrite quality
-- [ ] Co-residency test of small + large model on 8 GB
+- [ ] Re-check the model rule under real load (sim + browser running)
 
 ### Phase 5 — Three.js world (observer mode)
 **Depends on:** Phase 3 (Phase 4 can land in parallel)
@@ -110,7 +116,7 @@ This project is a game-like simulation of a haunted medieval town built around a
 - [ ] Orthographic pixel renderer, tilemap, sprite animation
 - [ ] Day/night, fog, and ghost shaders
 - [ ] Speech bubbles and rumor trace overlay
-- [ ] Start screen with seed entry
+- [ ] Start screen with seed entry, run-length preset, and "open replay"
 
 ### Phase 6 — Ghosts and the haunted layer
 **Depends on:** Phases 4 and 5
@@ -147,3 +153,10 @@ This project is a game-like simulation of a haunted medieval town built around a
 - [ ] Accusation and resolution against the hidden truth
 - [ ] Doomsday ending sequences (real, hoax, other)
 - [ ] Final README pass with captured screenshots from the real client
+
+### Phase 11 — In-character LoRA (optional stretch)
+**Depends on:** Phase 4 (replay logs as data); best after Phase 10
+**Done when:** a QLoRA-tuned 3B model, served by Ollama, beats the base model on the eval harness's rumor-rewrite and in-character scores.
+- [ ] Build a training set from the best replay-log lines
+- [ ] QLoRA fine-tune of the 3B model on the 3060 Ti and import it into Ollama
+- [ ] Before/after comparison in the eval harness
