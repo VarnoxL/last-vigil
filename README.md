@@ -77,6 +77,16 @@ Models run locally through Ollama on an RTX 3060 Ti (8 GB). The smoke test (`pyt
 
 Details, completion criteria, and risks are in [`PRD.md`](PRD.md). Project vocabulary (claim, hop, tier, omen...) is defined in [`GLOSSARY.md`](GLOSSARY.md), and the reasoning behind decisions that are hard to reverse is in [`docs/adr/`](docs/adr/).
 
+## Running the skeleton
+
+Each piece runs in its own terminal:
+
+```
+cd sim && cargo run            # prints a tick counter at 10 ticks/s (pass a number to stop after N ticks)
+python -m brain                # health check at http://127.0.0.1:8765/health
+cd client && npm install && npm run dev   # blank Three.js canvas
+```
+
 ## Working on this with Claude Code
 
 The repo enables the [Matt Pocock skills](https://github.com/mattpocock/skills) plugin in `.claude/settings.json`. When you open the repo, Claude Code prompts you to install it. `/teach`, `/tdd`, `/diagnosing-bugs`, and `/domain-modeling` are the most useful ones here.

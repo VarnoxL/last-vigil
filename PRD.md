@@ -1,6 +1,6 @@
 # Last Vigil — PRD
 
-> Branch: main · Worktree: C:\Users\danie\last-vigil · Last updated: 2026-10-17
+> Branch: main · Worktree: C:\Users\danie\Desktop\last-vigil · Last updated: 2026-10-18
 
 ## Problem
 
@@ -81,8 +81,8 @@ This project is a game-like simulation of a haunted medieval town built around a
 - [x] Install Rust toolchain (rustup), MSVC Build Tools, and Ollama; `cargo run` links
 - [x] Agent smoke test (`brain/agent_smoke_test.py`): a T1 and a T2 persona each return a schema-valid rumor decision; record latency, tok/s, and VRAM, then apply the model rule (two models vs. one)
   - Result 2026-10-17: PASS. Co-residency failed (Ollama evicts the 3B when the 8B loads; 8B alone uses 6.4 / 8 GB). **Model rule → one shared `qwen3:8b` for all tiers.** Warm 8B: ~4.7 s per decision, ~60 tok/s, 100% on GPU. Cold load ~30–70 s, so the brain must preload and keep the model alive.
-- [ ] Create `sim/` Cargo project, `brain/` Python package, `client/` Vite + TypeScript + Three.js project
-- [ ] Add `ASSETS.md` and a root `README.md` stub
+- [x] Create `sim/` Cargo project, `brain/` Python package, `client/` Vite + TypeScript + Three.js project
+- [x] Add `ASSETS.md` and a root `README.md` stub
 
 ### Phase 2 — Headless sim core (Tier 0 only)
 **Depends on:** Phase 1
