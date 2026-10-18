@@ -87,10 +87,11 @@ This project is a game-like simulation of a haunted medieval town built around a
 ### Phase 2 — Headless sim core (Tier 0 only)
 **Depends on:** Phase 1
 **Done when:** a seeded run of 50 agents on a tile map ticks for 10 simulated minutes with deterministic, identical final state across two runs.
-- [ ] World map, tiles, buildings, and a pathfinding grid
-- [ ] Agent state: needs, position, beliefs as numbers, utility-AI action selection
-- [ ] Seeded RNG and a determinism test
-- [ ] Doomsday clock driven by a run-length preset (days, real minutes per day) and the hidden-truth generator (`doom_is_real` and truth fragments)
+- [x] World map, tiles, buildings, and a pathfinding grid
+- [x] Agent state: needs, position, beliefs as numbers, utility-AI action selection
+- [x] Seeded RNG and a determinism test
+- [x] Doomsday clock driven by a run-length preset (days, real minutes per day) and the hidden-truth generator (`doom_is_real` and truth fragments)
+  - Result 2026-10-18: 50 agents, 6000 ticks (10 sim minutes), seed 42 → identical final state across two runs (`cargo test`). T0 cost ~0.0012 ms/tick in release, far under the 2 ms budget. Presets: Quick 3 days × 4 min, Standard 5 × 8, Long 10 × 20.
 
 ### Phase 3 — Rumor engine
 **Depends on:** Phase 2

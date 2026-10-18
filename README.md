@@ -82,7 +82,9 @@ Details, completion criteria, and risks are in [`PRD.md`](PRD.md). Project vocab
 Each piece runs in its own terminal:
 
 ```
-cd sim && cargo run            # prints a tick counter at 10 ticks/s (pass a number to stop after N ticks)
+cd sim && cargo run            # 50 Tier 0 agents in real time at 10 ticks/s, one summary line per second
+cd sim && cargo run --release -- 6000 42 quick   # headless: N ticks, seed, run length; prints ms/tick
+cd sim && cargo test           # determinism and pathfinding tests
 python -m brain                # health check at http://127.0.0.1:8765/health
 cd client && npm install && npm run dev   # blank Three.js canvas
 ```
