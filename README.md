@@ -89,10 +89,6 @@ python -m brain                # health check at http://127.0.0.1:8765/health
 cd client && npm install && npm run dev   # blank Three.js canvas
 ```
 
-## Working on this with Claude Code
-
-The repo enables the [Matt Pocock skills](https://github.com/mattpocock/skills) plugin in `.claude/settings.json`. When you open the repo, Claude Code prompts you to install it. `/teach`, `/tdd`, `/diagnosing-bugs`, and `/domain-modeling` are the most useful ones here.
-
 ## Regenerating the concept art
 
 ```
