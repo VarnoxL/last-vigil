@@ -37,10 +37,34 @@ pub struct Beliefs {
     pub loyalty: f32,
 }
 
+/// Social role; sets base influence in the rumor engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Station {
+    Prophet,
+    Priest,
+    TavernKeeper,
+    Elder,
+    Townsfolk,
+    Beggar,
+}
+
+impl Station {
+    pub fn base(self) -> f32 {
+        match self {
+            Self::Prophet => 0.8,
+            Self::Priest => 0.6,
+            Self::TavernKeeper | Self::Elder => 0.5,
+            Self::Townsfolk => 0.3,
+            Self::Beggar => 0.1,
+        }
+    }
+}
+
 /// An agent's id is its index in `Sim::agents`.
 #[derive(Debug, Clone)]
 pub struct Agent {
     pub pos: Pos,
+    pub station: Station,
     /// Index into `World::buildings`.
     pub home: usize,
     pub needs: Needs,
@@ -53,7 +77,8 @@ impl Agent {
         let needs = Needs { hunger: rng.unit() * 0.5, fatigue: rng.unit() * 0.5, loneliness: rng.unit() * 0.5 };
         let faith = rng.unit();
         let beliefs = Beliefs { faith, fear: 0.0, loyalty: faith * rng.unit() };
-        Self { pos, home, needs, beliefs, doing: Doing::Idle }
+        // TODO(phase 3): assign stations from the seed (1 prophet, 1 priest, 1 tavern keeper, 2 elders, 3 beggars).
+        Self { pos, station: Station::Townsfolk, home, needs, beliefs, doing: Doing::Idle }
     }
 
     /// Utility AI: score each action from needs and beliefs and take the best.

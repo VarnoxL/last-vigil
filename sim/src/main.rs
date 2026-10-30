@@ -1,5 +1,6 @@
 mod agent;
 mod rng;
+mod rumor;
 mod sim;
 mod world;
 

@@ -1,5 +1,6 @@
 use crate::agent::{Action, Agent, Doing};
 use crate::rng::Rng;
+use crate::rumor::{ClaimId, Proposition, RumorEngine};
 use crate::world::{BuildingKind, Pos, World};
 
 pub const TICKS_PER_SEC: u64 = 10;
@@ -95,6 +96,7 @@ pub struct Sim {
     pub truth: Truth,
     pub world: World,
     pub agents: Vec<Agent>,
+    pub rumors: RumorEngine,
     rng: Rng,
 }
 
@@ -111,7 +113,12 @@ impl Sim {
                 Agent::new(home, world.buildings[home].door, &mut rng)
             })
             .collect();
-        Self { tick: 0, preset, truth, world, agents, rng }
+        let rumors = RumorEngine::new(seed, agent_count);
+        Self { tick: 0, preset, truth, world, agents, rumors, rng }
+    }
+
+    pub fn plant(&mut self, agent: usize, proposition: Proposition, confidence: f32) -> ClaimId {
+        self.rumors.plant(self.tick, agent, proposition, confidence)
     }
 
     /// 0 at run start, 1 at countdown zero.
@@ -166,6 +173,9 @@ impl Sim {
                 Doing::Busy(action, left) => Doing::Busy(action, left - 1),
             };
         }
+
+        // TODO(phase 3): once implemented, every `rumor::CHECK_EVERY` ticks run
+        // `self.rumors.hearing_check(...)`, `record_sightings(...)`, and `drift_earned(...)`.
     }
 
     /// Text frame of the town: `#` wall, `+` door, `=` road, `.` grass, and each agent
