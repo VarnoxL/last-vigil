@@ -61,6 +61,620 @@ Each language does what it's best at.
 
 Models run locally through Ollama on an RTX 3060 Ti (8 GB). The smoke test (`python brain/agent_smoke_test.py`) found that a 3B and an 8B model can't stay loaded side by side, so every thinking tier shares one `qwen3:8b`. Tiers differ in how often they think, how much they remember, and whether they reflect. Measured speed: about 4.7 s per decision, 60 tok/s, entirely on the GPU.
 
+## Schematics
+
+These drawings are taken from the code as it is now (`sim/src/*.rs`, `brain/`, `client/src/main.ts`) and from the settled designs (`docs/rumor-engine.md`, ADRs 0001–0004, `PRD.md`). Each one marks what is **built**, what is **stubbed** (types and signatures exist, but the body is `todo!()`), and what is **planned** (not in the code yet). Every number shown is the actual constant in the code or the starting value in the design doc.
+
+Legend for the flowcharts: green = built and running, amber = stubbed in code, grey dashed = planned only.
+
+### 1. System schematic: processes, ports, and wires
+
+```mermaid
+flowchart LR
+    classDef built fill:#1f3d2b,stroke:#4caf50,color:#e8f5e9
+    classDef stub fill:#4a3b12,stroke:#ffb300,color:#fff8e1
+    classDef planned fill:#2a2a2a,stroke:#9e9e9e,color:#cfcfcf,stroke-dasharray:5 4
+    classDef hw fill:#102a43,stroke:#4f9dde,color:#e3f2fd
+
+    subgraph CLIENT["client/ · TypeScript · Vite 8 · three 0.180"]
+        direction TB
+        C1["main.ts<br/>WebGLRenderer · clear 0x0b0b10<br/>OrthographicCamera sized to window<br/>setAnimationLoop render"]:::built
+        C2["Tilemap + sprite renderer<br/>nearest-neighbor CC0 tiles"]:::planned
+        C3["Shaders: day/night, fog,<br/>ghost translucency, glow"]:::planned
+        C4["HUD: countdown, speech bubbles,<br/>rumor-ancestry panel, p95 latency overlay"]:::planned
+        C5["Role input layers<br/>Observer · God · Cult Member · Investigator"]:::planned
+        C6["Start screen<br/>seed · run length · open replay"]:::planned
+        C7["Websocket client<br/>snapshot + delta decoder"]:::planned
+        C1 --> C2 --> C3 --> C4
+        C6 --> C5 --> C7
+    end
+
+    subgraph SIM["sim/ · Rust 2024 edition · no crates"]
+        direction TB
+        S0["main.rs<br/>args: ticks · seed · preset<br/>real-time loop 10 ticks/s or headless"]:::built
+        S1["sim.rs<br/>Sim · Preset · Truth · Fragment<br/>tick() · render() · summary()"]:::built
+        S2["agent.rs<br/>Agent · Needs · Beliefs · Station<br/>utility AI choose() / finish()"]:::built
+        S3["world.rs<br/>64×48 tile grid · 19 buildings<br/>BFS path()"]:::built
+        S4["rng.rs<br/>SplitMix64"]:::built
+        S5["rumor.rs<br/>RumorEngine · Claim arena<br/>plant() works · rest todo!()"]:::stub
+        S6["Tier scheduler + promotion<br/>T0 crowd · T1 townsfolk · T2 key figures"]:::planned
+        S7["Websocket server<br/>JSON snapshots / deltas"]:::planned
+        S8["Brain request queue<br/>priorities · timeouts · fallback"]:::planned
+        S0 --> S1
+        S1 --> S2 & S3 & S5
+        S2 & S3 & S5 --> S4
+        S1 -.-> S6 -.-> S8
+        S1 -.-> S7
+    end
+
+    subgraph BRAIN["brain/ · Python · stdlib only so far"]
+        direction TB
+        B0["__main__.py<br/>ThreadingHTTPServer 127.0.0.1:8765<br/>GET /health → {status: ok}"]:::built
+        B1["agent_smoke_test.py<br/>schema-constrained /api/chat<br/>latency · tok/s · VRAM via nvidia-smi"]:::built
+        B2["Model gateway<br/>structured outputs · prompt templates"]:::planned
+        B3["T2 memory retrieval + reflection<br/>embeddings, CPU if VRAM is full"]:::planned
+        B4["Eval harness · rumor-rewrite scoring"]:::planned
+        B5["QLoRA fine-tune of a 3B on replay logs<br/>Phase 11 stretch"]:::planned
+        B0 -.-> B2 --> B3
+        B2 --> B4
+    end
+
+    subgraph HOST["Local machine"]
+        direction TB
+        O["Ollama 0.40.5<br/>localhost:11434<br/>keep-alive, preloaded"]:::hw
+        M["qwen3:8b Q4<br/>shared by every thinking tier<br/>about 4.7 s/decision · about 60 tok/s"]:::hw
+        G["RTX 3060 Ti · 8 GB<br/>8B resident = 6.4 / 8 GB<br/>3B + 8B co-residency FAILED"]:::hw
+        O --> M --> G
+    end
+
+    R[("Replay log<br/>every brain reply + the tick it applied on")]:::planned
+    T["tools/render_concept.py<br/>Pillow → docs/img/*.png"]:::built
+
+    C7 <-.->|"ws: snapshots, deltas,<br/>human-action events"| S7
+    S8 <-.->|"local HTTP: decision request<br/>→ structured JSON reply"| B2
+    B1 -- "HTTP /api/chat, /api/ps" --> O
+    B2 -.-> O
+    S8 -.->|"append live replies"| R
+    R -.->|"replay mode: read instead of calling brain"| S8
+```
+
+Rust never calls a model (ADR 0001). All prompting stays in Python, so the sim can run with the brain stubbed or replaced, and a replay needs no GPU.
+
+### 2. Sim crate: module wiring and data model
+
+```mermaid
+classDiagram
+    direction LR
+    class Sim {
+        +u64 tick
+        +Preset preset
+        +Truth truth
+        +World world
+        +Vec~Agent~ agents
+        +RumorEngine rumors
+        -Rng rng
+        +new(seed, preset, agent_count) Sim
+        +tick()
+        +plant(agent, proposition, confidence) ClaimId
+        +urgency() f32
+        +countdown_left() u64
+        +render() String
+        +summary() String
+    }
+    class Preset {
+        <<enum>>
+        Quick
+        Standard
+        Long
+        +parse(str) Option~Preset~
+        +shape() tuple_days_minutes
+        +ticks_per_day() u64
+        +total_ticks() u64
+    }
+    class Truth {
+        +bool doom_is_real
+        +bool prophet_is_fraud
+        +bool date_miscalculated
+        +Option~usize~ hoarder
+        +generate(rng, agents) Truth
+        +fragments() Vec~Fragment~
+    }
+    class Fragment {
+        <<enum>>
+        DoomIsReal(bool)
+        ProphetIsFraud(bool)
+        DateMiscalculated(bool)
+        Hoarder(usize)
+    }
+    class Agent {
+        +Pos pos
+        +Station station
+        +usize home
+        +Needs needs
+        +Beliefs beliefs
+        +Doing doing
+        +new(home, pos, rng) Agent
+        +choose(rng) Action
+        +finish(action)
+    }
+    class Needs {
+        +f32 hunger
+        +f32 fatigue
+        +f32 loneliness
+    }
+    class Beliefs {
+        +f32 faith
+        +f32 fear
+        +f32 loyalty
+    }
+    class Station {
+        <<enum>>
+        Prophet 0.8
+        Priest 0.6
+        TavernKeeper 0.5
+        Elder 0.5
+        Townsfolk 0.3
+        Beggar 0.1
+        +base() f32
+    }
+    class Doing {
+        <<enum>>
+        Idle
+        Walking(Action, Vec~Pos~)
+        Busy(Action, u64)
+    }
+    class Action {
+        <<enum>>
+        Eat
+        Sleep
+        Socialize
+        Pray
+        Wander
+    }
+    class World {
+        +Vec~Tile~ tiles
+        +Vec~Building~ buildings
+        +town() World
+        +door_of(kind) Pos
+        +random_open(rng) Pos
+        +path(from, to) Option~Vec~Pos~~
+    }
+    class Building {
+        +BuildingKind kind
+        +Pos door
+    }
+    class Tile {
+        <<enum>>
+        Grass
+        Road
+        Wall
+        Floor
+        Door
+        +walkable() bool
+    }
+    class Pos {
+        +u16 x
+        +u16 y
+    }
+    class Rng {
+        -u64 state
+        +next_u64() u64
+        +below(n) usize
+        +unit() f32
+        +chance(p) bool
+    }
+    class RumorEngine {
+        +Vec~Claim~ claims
+        +Vec~Vec~Known~~ known
+        +Vec~f32~ earned
+        -Rng rng
+        +plant(tick, agent, prop, conf) ClaimId
+        +influence(id, agent) f32
+        +hearing_check(tick, world, agents)
+        +record_sightings(tick, world, agents)
+        +drift_earned(ticks, ticks_per_day)
+    }
+    class Claim {
+        +Origin origin
+        +Option~ClaimId~ parent
+        +ClaimId root
+        +Option~usize~ teller
+        +usize hearer
+        +u64 tick
+        +f32 confidence
+        +Proposition proposition
+    }
+    class Known {
+        +ClaimId claim
+        +u32 times_told
+    }
+    class PendingHop {
+        +ClaimId parent
+        +usize teller
+        +usize hearer
+        +f32 confidence
+        +Proposition proposition
+    }
+    class Origin {
+        <<enum>>
+        Plant
+        Sighting
+        Hop
+    }
+    class Proposition {
+        <<enum>>
+        DoomIsReal(bool)
+        ProphetIsFraud(bool)
+        DateMiscalculated(bool)
+        Hoarder(usize)
+        +bark() String
+    }
+
+    Sim *-- Preset
+    Sim *-- Truth
+    Sim *-- World
+    Sim *-- "50" Agent
+    Sim *-- RumorEngine
+    Sim *-- Rng : seed
+    Truth ..> Fragment : fragments()
+    Agent *-- Needs
+    Agent *-- Beliefs
+    Agent *-- Station
+    Agent *-- Doing
+    Doing --> Action
+    Doing --> Pos
+    World *-- "3072" Tile
+    World *-- "19" Building
+    Building --> Pos
+    RumorEngine *-- "0..n arena" Claim
+    RumorEngine *-- Known
+    RumorEngine *-- Rng : seed XOR 0x52554D4F52
+    RumorEngine ..> PendingHop : collect then apply
+    Claim --> Origin
+    Claim --> Proposition
+    Claim --> Claim : parent, root
+    Known --> Claim
+```
+
+Every collection is a `Vec` indexed by id, never a `HashMap`, because `format!("{sim:?}")` is the determinism fingerprint (ADR 0003). An agent's id is its index in `Sim::agents`, and a claim's id is its index in `RumorEngine::claims`.
+
+### 3. The town, tile by tile
+
+This is the exact output of `World::town()` (`cargo run --release -- 0 42 quick`, agent letters removed). The grid is 64 × 48 tiles. The roads cross at (32, 24).
+
+```
+         x=0         10        20        30        40        50        60  63
+           |         |         |         |  ROAD_X=32        |         |   |
+  y= 0     ................................=...............................
+           ................................=...............................
+           ................................=...............................
+           ................................=...............................
+  y= 4     ............................#########...........................   ← CHAPEL (28,4) 9×7
+           ............................#       #...........................     the chapel sits on the
+           ............................#       #...........................     N road; the road north
+           ............................#       #...........................     of it is a dead end
+           ............................#       #...........................
+           ............................#       #...........................
+  y=10     ............................####+####...........................   ← chapel door (32,10)
+           ................................=...............................
+           ................................=...............................
+           ................................=...............................
+           ................................=...............................
+           ................................=...............................
+           ................................=...............................
+           ................................=...............................
+  y=18     ..#####.#####.#####.#####.......=.....#####.#####.#####.#####...   ← north homes, 5×4
+           ..#   #.#   #.#   #.#   #.......=.....#   #.#   #.#   #.#   #...
+           ..#   #.#   #.#   #.#   #.......=.....#   #.#   #.#   #.#   #...
+  y=21     ..##+##.##+##.##+##.##+##.......=.....##+##.##+##.##+##.##+##...   ← doors face south
+           ................................=...............................
+           ................................=...............................
+  y=24     ================================================================   ← ROAD_Y=24
+           ................................=...............................
+  y=26     ....................####+###....=...####+###....................   ← MARKET (20,26) door (24,26)
+           ....................#      #....=...#      #....................     TAVERN (36,26) door (40,26)
+           ....................#      #....=...#      #....................
+           ....................#      #....=...#      #....................
+           ....................#      #....=...#      #....................
+           ....................########....=...########....................
+           ................................=...............................
+           ................................=...............................
+  y=34     ..##+##.##+##.##+##.##+##.......=.....##+##.##+##.##+##.##+##...   ← south homes, doors face north
+           ..#   #.#   #.#   #.#   #.......=.....#   #.#   #.#   #.#   #...
+           ..#   #.#   #.#   #.#   #.......=.....#   #.#   #.#   #.#   #...
+  y=37     ..#####.#####.#####.#####.......=.....#####.#####.#####.#####...
+           ................................=...............................
+           ................................=...............................
+           ...  (rows 40–47: grass with the N–S road at x=32)  ...
+```
+
+| Glyph | Tile | Walkable |
+|---|---|---|
+| `.` | Grass | yes |
+| `=` | Road | yes |
+| `#` | Wall | **no** |
+| ` ` | Floor (inside a building) | yes |
+| `+` | Door | yes |
+
+| `buildings[i]` | Kind | Origin (x, y) | Size | Door | Who goes there |
+|---|---|---|---|---|---|
+| 0 | Chapel | (28, 4) | 9 × 7 | (32, 10) | `Pray` |
+| 1 | Tavern | (36, 26) | 8 × 6 | (40, 26) | `Socialize` |
+| 2 | Market | (20, 26) | 8 × 6 | (24, 26) | `Eat` |
+| 3, 5, 7 … 17 | Home, north row | x ∈ {2, 8, 14, 20, 38, 44, 50, 56}, y = 18 | 5 × 4 | (x+2, 21) | `Sleep` (own home) |
+| 4, 6, 8 … 18 | Home, south row | same x, y = 34 | 5 × 4 | (x+2, 34) | `Sleep` (own home) |
+
+Each door goes in the middle of the wall facing the main east–west road: the bottom wall if the building ends at or above `ROAD_Y`, otherwise the top wall. Agent `id` lives in `homes[id % 16]`, so with 50 agents the first two homes hold 4 people and the other fourteen hold 3. Every agent spawns standing on its home's door.
+
+**Pathfinding:** `World::path` runs a BFS over the 3,072 tiles with neighbors in the fixed order N, E, S, W, so equal-length paths always break ties the same way. It returns the path reversed, with the next step last, so the walker just calls `pop()`. A test checks that every door can be reached from the chapel door.
+
+### 4. Seeding and the hidden truth
+
+```mermaid
+flowchart TD
+    classDef built fill:#1f3d2b,stroke:#4caf50,color:#e8f5e9
+    classDef stub fill:#4a3b12,stroke:#ffb300,color:#fff8e1
+
+    SEED(["seed: u64"]):::built --> RNG1["Sim rng = Rng::new(seed)"]:::built
+    SEED --> RNG2["Rumor rng = Rng::new(seed XOR 0x52_554D_4F52)<br/>'RUMOR' · its own stream, so rumor draws<br/>never shift the movement draws"]:::stub
+
+    RNG1 --> D1{"chance 0.5<br/>doom_is_real?"}:::built
+    D1 -- "yes, p=0.50" --> TR["fraud = false<br/>miscalculated = false"]:::built
+    D1 -- "no" --> D2{"chance 0.6<br/>prophet_is_fraud?"}:::built
+    D2 -- "yes" --> D3{"chance 0.3<br/>miscalculated too?"}:::built
+    D2 -- "no" --> D4["miscalculated = true<br/>no draw: the short-circuit in<br/>!fraud OR chance(0.3)"]:::built
+    D3 --> H
+    D4 --> H
+    TR --> H{"chance 0.5<br/>is there a hoarder?"}:::built
+    H -- "yes" --> H2["hoarder = below(agent_count)"]:::built
+    H -- "no" --> H3["hoarder = None"]:::built
+    H2 & H3 --> AG["for id in 0..50:<br/>hunger, fatigue, loneliness = unit × 0.5<br/>faith = unit · fear = 0 · loyalty = faith × unit<br/>5 draws per agent, in id order"]:::built
+    AG --> FR["truth.fragments() → 3 or 4 Fragments<br/>held by ghosts later, never read by agents"]:::built
+```
+
+Each outcome's probability:
+
+| Outcome | Probability |
+|---|---|
+| Doom is real | 0.50 |
+| False doom, fraud prophet, date correct | 0.5 × 0.6 × 0.7 = **0.21** |
+| False doom, fraud prophet and wrong date | 0.5 × 0.6 × 0.3 = **0.09** |
+| False doom, honest prophet, wrong date | 0.5 × 0.4 = **0.20** |
+| Has a hoarder (independent of the rows above) | 0.50, uniform over the 50 agents |
+
+Seed 42 gives `[DoomIsReal(false), ProphetIsFraud(true), DateMiscalculated(true), Hoarder(0)]`.
+
+**SplitMix64** (`rng.rs`): `state += 0x9E3779B97F4A7C15`; `z = (z ^ z>>30) * 0xBF58476D1CE4E5B9`; `z = (z ^ z>>27) * 0x94D049BB133111EB`; `z ^ z>>31`. `unit()` takes the top 24 bits ÷ 2²⁴, so it is exact in an `f32`. It gives the same bits on every platform, and no crate is needed.
+
+### 5. Clock and run-length presets
+
+`TICKS_PER_SEC = 10`. A preset is just two numbers: countdown days and real minutes per in-game day.
+
+| Preset | Days | Real min/day | Ticks/day | Total ticks | Wall time |
+|---|---|---|---|---|---|
+| Quick | 3 | 4 | 2,400 | 7,200 | 12 min |
+| Standard *(default)* | 5 | 8 | 4,800 | 24,000 | 40 min |
+| Long | 10 | 20 | 12,000 | 120,000 | 3 h 20 min |
+
+```
+urgency = min(tick / total_ticks, 1)                 0 at start ─────────────────▶ 1 at countdown zero
+countdown_left = total_ticks − tick (saturating)     shown as m:ss in summary()
+day = min(tick / ticks_per_day + 1, days)
+```
+
+Every rate is written per day, so the town acts the same within one in-game day under any preset. A Long run just gives the brain more real seconds per in-game decision.
+
+### 6. One tick, step by step (`Sim::tick`)
+
+```mermaid
+flowchart TD
+    classDef built fill:#1f3d2b,stroke:#4caf50,color:#e8f5e9
+    classDef stub fill:#4a3b12,stroke:#ffb300,color:#fff8e1
+    classDef planned fill:#2a2a2a,stroke:#9e9e9e,color:#cfcfcf,stroke-dasharray:5 4
+
+    A(["tick += 1<br/>day = ticks_per_day as f32<br/>urgency = tick / total_ticks"]):::built --> L
+    L["for agent in agents, in fixed id order 0..49<br/>so every rng draw lands in the same sequence"]:::built --> N
+    N["Needs rise, each capped at 1.0<br/>hunger += 3.0 / day → full in 1/3 day<br/>fatigue += 1.5 / day → full in 2/3 day<br/>loneliness += 2.0 / day → full in 1/2 day"]:::built --> F
+    F["Fear eases toward its target<br/>target = urgency × (0.2 + 0.8 × faith)<br/>fear += (target − fear) × 8 / day"]:::built --> S
+    S{"agent.doing"}:::built
+    S -- "Idle" --> I1["action = choose(rng)<br/>goal = goal(world, agent, action, rng)<br/>world.path(pos, goal)"]:::built
+    I1 -- "Some(path)" --> I2["Walking(action, path)"]:::built
+    I1 -- "None" --> I3["Idle"]:::built
+    S -- "Walking" --> W1{"tick % 3 == 0?<br/>STEP_TICKS = 3 → 0.3 s/tile"}:::built
+    W1 -- "yes" --> W2["pos = path.pop()"]:::built
+    W1 -- "no" --> W3
+    W2 --> W3{"path empty?"}:::built
+    W3 -- "yes" --> W4["Busy(action, duration(action, day))"]:::built
+    W3 -- "no" --> W5["Walking(action, path)"]:::built
+    S -- "Busy(a, 0)" --> B1["finish(a) → Idle"]:::built
+    S -- "Busy(a, n)" --> B2["Busy(a, n − 1)"]:::built
+    I2 & I3 & W4 & W5 & B1 & B2 --> NEXT{"more agents?"}:::built
+    NEXT -- "yes" --> L
+    NEXT -- "no" --> RUM
+    RUM["every CHECK_EVERY = 10 ticks:<br/>rumors.hearing_check · record_sightings · drift_earned"]:::stub --> BR
+    BR["at the tick boundary, apply brain replies in a fixed order<br/>and append each to the replay log"]:::planned --> TIER["tier scheduling, promotion and demotion"]:::planned --> OUT["broadcast a delta to the websocket clients"]:::planned
+```
+
+Walking steps on a global beat (`tick % 3`), not on each agent's own clock, so the whole crowd steps on the same tick. An action of duration *d* keeps the agent busy for *d + 1* ticks, because `Busy(a, 0)` still takes one more tick to `finish`.
+
+### 7. Agent life cycle and utility AI
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle : spawn on home door
+    Idle --> Walking : choose() and BFS finds a path
+    Idle --> Idle : no path, retry next tick
+    Walking --> Walking : pop one tile every 3rd tick
+    Walking --> Busy : path empty, arrived
+    Busy --> Busy : countdown n → n−1
+    Busy --> Idle : n == 0 → finish(action)
+
+    note right of Busy
+        Eat · market door · day/24 · hunger = 0
+        Sleep · own home door · day/4 · fatigue = 0
+        Socialize · tavern door · day/12 · loneliness = 0
+        Pray · chapel door · day/16 · fear × 0.5
+        Wander · random grass/road tile · 0 ticks
+    end note
+```
+
+`Agent::choose` scores every action, adds jitter `U[0, 0.1)` to each so the crowd doesn't move in lockstep, and takes the highest:
+
+| Action | Utility score | Destination | Busy for (fraction of a day) | Busy ticks (Quick / Std / Long) | On finish |
+|---|---|---|---|---|---|
+| Eat | `hunger` | Market door (24, 26) | 1/24 | 100 / 200 / 500 | `hunger = 0` |
+| Sleep | `fatigue` | Own home door | 1/4 | 600 / 1200 / 3000 | `fatigue = 0` |
+| Socialize | `0.8 × loneliness` | Tavern door (40, 26) | 1/12 | 200 / 400 / 1000 | `loneliness = 0` |
+| Pray | `0.8 × faith × (0.2 + fear) + 0.1 × loyalty` | Chapel door (32, 10) | 1/16 | 150 / 300 / 750 | `fear × 0.5` |
+| Wander | `0.2` (constant floor) | Random grass or road tile | 0 | 0 | — |
+| *Hoard* (planned) | rises with urgency; only starts if agents in sight ≤ ⌊urgency × 3⌋ | Market, then home | — | — | carries supplies, can be sighted |
+
+Feedback loop: the countdown pushes **fear** up, fear makes **Pray** score higher, and praying **halves fear**. A believer (high faith) heads for the chapel more and more often as zero approaches. The ASCII view shows each agent as the letter of its current action: `E`at, `S`leep, s`O`cialize, `P`ray, `W`ander, `I`dle.
+
+### 8. Rumor engine: the hearing check (Phase 3, stubbed)
+
+The types, constants, and signatures are in `sim/src/rumor.rs`. Only `plant()` has a body. The rest is `todo!()`, and it isn't called from `Sim::tick` yet.
+
+```mermaid
+flowchart TD
+    classDef stub fill:#4a3b12,stroke:#ffb300,color:#fff8e1
+    classDef built fill:#1f3d2b,stroke:#4caf50,color:#e8f5e9
+    classDef rej fill:#4a1a1a,stroke:#e57373,color:#ffebee
+
+    START(["hearing_check(tick, world, agents)<br/>every CHECK_EVERY = 10 ticks"]):::stub --> P1
+
+    subgraph COLLECT["Phase 1 · collect_hops · reads the state at the start of the check only"]
+        P1["for each teller"]:::stub --> INF["influence = clamp(station.base + derived + earned, 0, 1)<br/>derived = 0.2 × (loyalty − 0.5) for the prophet and priest<br/>derived = 0.1 × (fear − 0.5) for everyone else<br/>computed fresh each time, never stored"]:::stub
+        INF --> PS{"roll p_speak<br/>(0.1 + 0.3·fear + 0.2·loneliness)<br/>× 2 if Socializing<br/>× (0.5 + influence), cap 1"}:::stub
+        PS -- "silent" --> P1
+        PS -- "speaks" --> PC["pick_claim: weighted over known[teller] by<br/>confidence / (1 + times_told × (1 − influence))<br/>influential agents don't tire of repeating themselves"]:::stub
+        PC --> AUD{"influence ≥ 0.7?"}:::stub
+        AUD -- "yes: broadcast" --> ALL["every agent in hearing range"]:::stub
+        AUD -- "no" --> ONE["one random agent in hearing range"]:::stub
+        ALL & ONE --> RANGE["in_range: ≤ HEAR_RANGE 3 tiles,<br/>same room (same building, or both outdoors),<br/>no wall between them"]:::stub
+        RANGE --> CONF["hearer_conf = teller_conf × 0.85 × trust × lean, cap 1<br/>trust = 0.5 + teller influence<br/>lean: DoomIsReal(true) → 0.5 + faith<br/>ProphetIsFraud(true) → 1.5 − faith<br/>otherwise 1.0 · × 0.3 if a sighting contradicts it"]:::stub
+        CONF --> MUT{"mutate? p = 0.05 + 0.15 × teller fear"}:::stub
+        MUT -- "Hoarder(id)" --> SW["swap id to an agent in the teller's sight,<br/>within SIGHT_RANGE 6, else anyone"]:::stub
+        MUT -- "yes/no proposition" --> KEEP["never flips"]:::stub
+        SW & KEEP --> PH["push PendingHop"]:::stub
+    end
+
+    PH --> AP
+
+    subgraph APPLY["Phase 2 · apply_hop · in collect order"]
+        AP{"confidence below MIN_CONFIDENCE 0.1?"}:::stub
+        AP -- "yes" --> DROP1["drop"]:::rej
+        AP -- "no" --> SR{"hearer already holds the<br/>same proposition from the same root?"}:::stub
+        SR -- "yes" --> DROP2["drop: A→B→A adds nothing"]:::rej
+        SR -- "no" --> PUSH["claims.push(Claim origin Hop, parent, root kept)<br/>known[hearer].push · teller times_told += 1"]:::stub
+        PUSH --> COR{"same proposition already held<br/>from a different root?"}:::stub
+        COR -- "yes" --> CB["corroboration: +0.05 earned to whoever<br/>told the hearer first (nobody if it was a sighting)"]:::stub
+        COR -- "no" --> FB
+        CB --> FB["belief_feedback, built last"]:::stub
+    end
+```
+
+Because collection reads only the state from the start of the check, a claim moves **at most one hop per check**.
+
+**Earned influence** stays in `[−0.2, +0.3]` and drifts 10% toward 0 per in-game day:
+
+| Event | Δ earned |
+|---|---|
+| Corroboration: a hearer gets the same proposition from a different root | +0.05 to whoever told them first |
+| A hearer later sights something that matches what you told them | +0.10 |
+| Your claim reaches a hearer whose own sighting contradicts it | −0.10 |
+
+**Belief feedback** when an agent accepts a claim with confidence *c*:
+
+| Proposition | Effect |
+|---|---|
+| `DoomIsReal(true)` | `faith += 0.1·c·(1 − faith)` |
+| `ProphetIsFraud(true)` | `loyalty −= 0.1·c·loyalty`; `faith −= 0.05·c·faith` |
+| `DateMiscalculated(true)` | `faith −= 0.05·c·faith` |
+| `Hoarder(_)` | `fear += 0.05·c·(1 − fear)` |
+
+**Stations** (to be assigned from the seed): 1 Prophet 0.8 · 1 Priest 0.6 · 1 Tavern keeper 0.5 · 2 Elders 0.5 · 42 Townsfolk 0.3 · 3 Beggars 0.1. Today every agent is `Townsfolk`.
+
+### 9. Claim arena and ancestry (ADR 0004)
+
+A claim is never edited after it is pushed. Each hop pushes a new node that points to its `parent` and its `root`. A worked example, with mutation off and every teller a Townsfolk at influence 0.3, so `trust = 0.8`:
+
+```mermaid
+flowchart LR
+    classDef plant fill:#3b1f4a,stroke:#ba68c8,color:#f3e5f5
+    classDef hop fill:#1f2f4a,stroke:#64b5f6,color:#e3f2fd
+    classDef sight fill:#1f3d2b,stroke:#4caf50,color:#e8f5e9
+    classDef dead fill:#4a1a1a,stroke:#e57373,color:#ffebee
+
+    C0["claims[0] · Plant<br/>Hoarder(7) → agent 3<br/>conf 0.900 · root 0"]:::plant
+    C1["claims[1] · Hop<br/>3 → 12 · conf 0.612<br/>parent 0 · root 0"]:::hop
+    C2["claims[2] · Hop<br/>3 → 20 · conf 0.612<br/>parent 0 · root 0"]:::hop
+    C3["claims[3] · Hop<br/>12 → 31 · conf 0.416<br/>parent 1 · root 0"]:::hop
+    C4["claims[4] · Hop, mutated<br/>20 → 9 · Hoarder(14) · conf 0.416<br/>parent 2 · root 0"]:::hop
+    C5["claims[5] · Hop<br/>31 → 44 · conf 0.283<br/>parent 3 · root 0"]:::hop
+    C6["claims[6] · Hop<br/>44 → 2 · conf 0.193"]:::hop
+    C7["claims[7] · Hop<br/>2 → 5 · conf 0.131"]:::hop
+    X["5 → next: 0.089, below 0.1<br/>dropped, chain ends"]:::dead
+    S8["claims[8] · Sighting<br/>Hoarder(7) → agent 12<br/>conf 0.95 · root 8"]:::sight
+
+    C0 --> C1 & C2
+    C1 --> C3 --> C5 --> C6 --> C7 -.-> X
+    C2 --> C4
+    S8 -.->|"agent 12 now holds Hoarder(7) from two roots<br/>→ corroboration, agent 3 earns +0.05"| C1
+```
+
+Each hop multiplies confidence by `0.85 × 0.8 = 0.68`, so a planted 0.9 claim from ordinary townsfolk dies after six hops. A broadcast from the prophet (`trust = 1.3`) multiplies it by 1.105 per hop, capped at 1, so the prophet's words *gain* weight as they spread. A mutated node keeps its `parent` and `root`, which is how the UI can show how "Hoarder(7)" became "Hoarder(14)". Planned extras: `--plant hoarder:7` and `--dump <file>` writing `{ seed, tick, claims: [...] }` with serde.
+
+### 10. Planned sim ↔ brain round trip (Phase 4) and replay
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as Sim tick loop (Rust)
+    participant Q as Request queue (Rust)
+    participant B as Brain :8765 (Python)
+    participant O as Ollama :11434
+    participant L as Replay log
+
+    Note over T: tick N · a T1/T2 agent hears a claim
+    T->>Q: enqueue {agent, tier, claim, persona, memory budget}<br/>priority by tier and involvement
+    Note over T: tick loop never blocks: T0 fallback<br/>behavior until a reply lands
+    Q->>B: POST decision request (local HTTP)
+    B->>O: /api/chat · qwen3:8b · format = JSON schema
+    Note over O: about 4.7 s warm · about 60 tok/s<br/>cold load 30–70 s, so preload + keep_alive
+    O-->>B: {believes, belief_strength, will_repeat, rewritten, inner_thought}
+    B-->>Q: validated structured reply
+    Q->>T: hand over at the next tick boundary, in fixed order
+    T->>L: append {tick applied, agent, reply}
+    Note over T,L: Replay mode: Q reads from L instead of B,<br/>so the final state is identical with no GPU
+```
+
+**Tiers** all share one `qwen3:8b`, because the 3B and 8B models could not stay loaded together on 8 GB:
+
+| Tier | Count | Model calls | Thinks when | Memory | Reflection |
+|---|---|---|---|---|---|
+| T0 crowd | 30–50 | none, numbers only + canned barks | every tick (utility AI) | none | no |
+| T1 townsfolk | 10–15 | qwen3:8b, short outputs | on events: hears a rumor, meets someone | small | no |
+| T2 key figures | 3–5 | qwen3:8b | on events, more often | embedding retrieval | yes |
+
+At about 750 serialized decisions per real hour, the queue's priority policy matters. Promotion and demotion (Phase 8) move agents between tiers by how involved they are in the story.
+
+### 11. Determinism contract
+
+```
+same seed + models stubbed  ──▶  identical format!("{sim:?}")   (tested: 50 agents × 6,000 ticks, seeds 42/42 equal, 1/2 differ)
+live run + replay log       ──▶  identical final state, no GPU   (Phase 4)
+
+Rules that make it hold:
+  1. One SplitMix64 per subsystem, forked from the seed (sim; rumor = seed ^ "RUMOR").
+  2. Agents are iterated in id order; BFS neighbors are in N,E,S,W order.
+  3. Vec / BTreeMap only. No HashMap anywhere in sim state.
+  4. Brain replies apply only at tick boundaries, in a fixed order, and are logged with that tick.
+  5. Rumor checks are two-phase (collect, then apply), so the result doesn't depend on update order.
+```
+
+Measured Tier 0 cost: about **0.0012 ms/tick** for 50 agents in release, against a 2 ms budget.
+
 ## Build order
 
 1. Toolchain and skeleton
