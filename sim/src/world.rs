@@ -56,6 +56,8 @@ pub struct Building {
 pub struct World {
     pub tiles: Vec<Tile>,
     pub buildings: Vec<Building>,
+    /// Building index for each tile (walls and door included), `None` outdoors.
+    room: Vec<Option<u8>>,
 }
 
 impl World {
@@ -64,6 +66,7 @@ impl World {
     pub fn town() -> Self {
         use BuildingKind::*;
         let mut tiles = vec![Tile::Grass; W * H];
+        let mut room = vec![None; W * H];
         for x in 0..W {
             tiles[ROAD_Y * W + x] = Tile::Road;
         }
@@ -79,9 +82,10 @@ impl World {
         }
 
         let mut buildings = Vec::new();
-        for (kind, x, y, w, h) in layout {
+        for (i, (kind, x, y, w, h)) in layout.into_iter().enumerate() {
             for yy in y..y + h {
                 for xx in x..x + w {
+                    room[yy * W + xx] = Some(i as u8);
                     let edge = xx == x || xx == x + w - 1 || yy == y || yy == y + h - 1;
                     tiles[yy * W + xx] = if edge { Tile::Wall } else { Tile::Floor };
                 }
@@ -92,7 +96,16 @@ impl World {
             tiles[door.idx()] = Tile::Door;
             buildings.push(Building { kind, door });
         }
-        Self { tiles, buildings }
+        Self { tiles, buildings, room }
+    }
+
+    /// Which building `p` is in (door counts as inside), or `None` outdoors.
+    pub fn room_of(&self, p: Pos) -> Option<u8> {
+        self.room[p.idx()]
+    }
+
+    pub fn tile(&self, p: Pos) -> Tile {
+        self.tiles[p.idx()]
     }
 
     /// Door of the first building of this kind. Only homes come in multiples.

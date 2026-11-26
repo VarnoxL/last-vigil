@@ -8,7 +8,7 @@
 
 use crate::agent::{Agent, Station};
 use crate::rng::Rng;
-use crate::world::{Pos, World};
+use crate::world::{Pos, Tile, World};
 
 // Starting values from the design doc; all of them are meant to be tuned.
 /// Ticks between hearing checks.
@@ -206,8 +206,38 @@ impl RumorEngine {
 
 /// Same room (same building, or both outdoors), within `range` tiles, with no wall between them.
 /// Used for both hearing (`HEAR_RANGE`) and sight (`SIGHT_RANGE`).
+/// Distance is Chebyshev (a square), matching the grid.
 pub fn in_range(world: &World, a: Pos, b: Pos, range: u16) -> bool {
-    todo!("distance, then room, then walls")
+    if a.x.abs_diff(b.x).max(a.y.abs_diff(b.y)) > range {
+        return false;
+    }
+    if world.room_of(a) != world.room_of(b) {
+        return false;
+    }
+    // Bresenham from a to b; any wall tile on the line blocks. Rooms are plain
+    // rectangles, so this only bites outdoors (a line across a building corner).
+    let (x1, y1) = (b.x as i32, b.y as i32);
+    let (mut x, mut y) = (a.x as i32, a.y as i32);
+    let (dx, dy) = ((x1 - x).abs(), -(y1 - y).abs());
+    let (sx, sy) = ((x1 - x).signum(), (y1 - y).signum());
+    let mut err = dx + dy;
+    loop {
+        if world.tile(Pos { x: x as u16, y: y as u16 }) == Tile::Wall {
+            return false;
+        }
+        if x == x1 && y == y1 {
+            return true;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
+    }
 }
 
 /// Apply an accepted claim to the hearer's beliefs. Build last, after the tests below pass.
@@ -296,9 +326,22 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn walls_block_hearing_and_sight() {
-        todo!()
+        // First home: rect x 2..=6, y 18..=21, top wall at y = 18.
+        let world = World::town();
+        let p = |x, y| Pos { x, y };
+
+        // Home floor vs grass just outside, 2 tiles apart through the top wall.
+        for range in [HEAR_RANGE, SIGHT_RANGE] {
+            assert!(!in_range(&world, p(4, 19), p(4, 17), range));
+        }
+        // Control: two outdoor tiles 2 apart with nothing between.
+        assert!(in_range(&world, p(4, 17), p(6, 17), HEAR_RANGE));
+        // Both outdoors, but the line cuts the home's top-left corner (2, 18).
+        assert!(!in_range(&world, p(1, 19), p(3, 17), SIGHT_RANGE));
+        // Clear line, but 4 tiles apart.
+        assert!(!in_range(&world, p(4, 17), p(8, 17), HEAR_RANGE));
+        // TODO: extend to the doc's "no hop and no sighting" once the hearing check exists.
     }
 
     #[test]

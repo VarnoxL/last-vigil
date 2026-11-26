@@ -94,7 +94,7 @@ flowchart LR
         S0["main.rs<br/>args: ticks · seed · preset<br/>real-time loop 10 ticks/s or headless"]:::built
         S1["sim.rs<br/>Sim · Preset · Truth · Fragment<br/>tick() · render() · summary()"]:::built
         S2["agent.rs<br/>Agent · Needs · Beliefs · Station<br/>utility AI choose() / finish()"]:::built
-        S3["world.rs<br/>64×48 tile grid · 19 buildings<br/>BFS path()"]:::built
+        S3["world.rs<br/>64×48 tile grid · 19 buildings<br/>room_of() · BFS path()"]:::built
         S4["rng.rs<br/>SplitMix64"]:::built
         S5["rumor.rs<br/>RumorEngine · Claim arena<br/>plant() works · rest todo!()"]:::stub
         S6["Tier scheduler + promotion<br/>T0 crowd · T1 townsfolk · T2 key figures"]:::planned
@@ -553,7 +553,7 @@ flowchart TD
         PC --> AUD{"influence ≥ 0.7?"}:::stub
         AUD -- "yes: broadcast" --> ALL["every agent in hearing range"]:::stub
         AUD -- "no" --> ONE["one random agent in hearing range"]:::stub
-        ALL & ONE --> RANGE["in_range: ≤ HEAR_RANGE 3 tiles,<br/>same room (same building, or both outdoors),<br/>no wall between them"]:::stub
+        ALL & ONE --> RANGE["in_range: ≤ HEAR_RANGE 3 tiles,<br/>same room (same building, or both outdoors),<br/>no wall between them"]:::built
         RANGE --> CONF["hearer_conf = teller_conf × 0.85 × trust × lean, cap 1<br/>trust = 0.5 + teller influence<br/>lean: DoomIsReal(true) → 0.5 + faith<br/>ProphetIsFraud(true) → 1.5 − faith<br/>otherwise 1.0 · × 0.3 if a sighting contradicts it"]:::stub
         CONF --> MUT{"mutate? p = 0.05 + 0.15 × teller fear"}:::stub
         MUT -- "Hoarder(id)" --> SW["swap id to an agent in the teller's sight,<br/>within SIGHT_RANGE 6, else anyone"]:::stub
