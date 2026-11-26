@@ -547,14 +547,14 @@ flowchart TD
 
     subgraph COLLECT["Phase 1 · collect_hops · reads the state at the start of the check only"]
         P1["for each teller"]:::stub --> INF["influence = clamp(station.base + derived + earned, 0, 1)<br/>derived = 0.2 × (loyalty − 0.5) for the prophet and priest<br/>derived = 0.1 × (fear − 0.5) for everyone else<br/>computed fresh each time, never stored"]:::built
-        INF --> PS{"roll p_speak<br/>(0.1 + 0.3·fear + 0.2·loneliness)<br/>× 2 if Socializing<br/>× (0.5 + influence), cap 1"}:::stub
+        INF --> PS{"roll p_speak<br/>(0.1 + 0.3·fear + 0.2·loneliness)<br/>× 2 if Socializing<br/>× (0.5 + influence), cap 1"}:::built
         PS -- "silent" --> P1
         PS -- "speaks" --> PC["pick_claim: weighted over known[teller] by<br/>confidence / (1 + times_told × (1 − influence))<br/>influential agents don't tire of repeating themselves"]:::stub
         PC --> AUD{"influence ≥ 0.7?"}:::stub
         AUD -- "yes: broadcast" --> ALL["every agent in hearing range"]:::stub
         AUD -- "no" --> ONE["one random agent in hearing range"]:::stub
         ALL & ONE --> RANGE["in_range: ≤ HEAR_RANGE 3 tiles,<br/>same room (same building, or both outdoors),<br/>no wall between them"]:::built
-        RANGE --> CONF["hearer_conf = teller_conf × 0.85 × trust × lean, cap 1<br/>trust = 0.5 + teller influence<br/>lean: DoomIsReal(true) → 0.5 + faith<br/>ProphetIsFraud(true) → 1.5 − faith<br/>otherwise 1.0 · × 0.3 if a sighting contradicts it"]:::stub
+        RANGE --> CONF["hearer_conf = teller_conf × 0.85 × trust × lean, cap 1<br/>trust = 0.5 + teller influence<br/>lean: DoomIsReal(true) → 0.5 + faith<br/>ProphetIsFraud(true) → 1.5 − faith<br/>otherwise 1.0 · × 0.3 if a sighting contradicts it"]:::built
         CONF --> MUT{"mutate? p = 0.05 + 0.15 × teller fear"}:::stub
         MUT -- "Hoarder(id)" --> SW["swap id to an agent in the teller's sight,<br/>within SIGHT_RANGE 6, else anyone"]:::stub
         MUT -- "yes/no proposition" --> KEEP["never flips"]:::stub
@@ -564,13 +564,13 @@ flowchart TD
     PH --> AP
 
     subgraph APPLY["Phase 2 · apply_hop · in collect order"]
-        AP{"confidence below MIN_CONFIDENCE 0.1?"}:::stub
+        AP{"confidence below MIN_CONFIDENCE 0.1?"}:::built
         AP -- "yes" --> DROP1["drop"]:::rej
-        AP -- "no" --> SR{"hearer already holds the<br/>same proposition from the same root?"}:::stub
+        AP -- "no" --> SR{"hearer already holds the<br/>same proposition from the same root?"}:::built
         SR -- "yes" --> DROP2["drop: A→B→A adds nothing"]:::rej
-        SR -- "no" --> PUSH["claims.push(Claim origin Hop, parent, root kept)<br/>known[hearer].push · teller times_told += 1"]:::stub
-        PUSH --> COR{"same proposition already held<br/>from a different root?"}:::stub
-        COR -- "yes" --> CB["corroboration: +0.05 earned to whoever<br/>told the hearer first (nobody if it was a sighting)"]:::stub
+        SR -- "no" --> PUSH["claims.push(Claim origin Hop, parent, root kept)<br/>known[hearer].push · teller times_told += 1"]:::built
+        PUSH --> COR{"same proposition already held<br/>from a different root?"}:::built
+        COR -- "yes" --> CB["corroboration: +0.05 earned to whoever<br/>told the hearer first (nobody if it was a plant or sighting,<br/>or if the first teller is telling again)"]:::built
         COR -- "no" --> FB
         CB --> FB["belief_feedback, built last"]:::stub
     end

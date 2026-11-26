@@ -6,7 +6,7 @@
 // Remove once the hearing check is wired into `Sim::tick`.
 #![allow(dead_code, unused_variables)]
 
-use crate::agent::{Agent, Station};
+use crate::agent::{Action, Agent, Doing, Station};
 use crate::rng::Rng;
 use crate::world::{Pos, Tile, World};
 
@@ -163,12 +163,45 @@ impl RumorEngine {
     /// Phase 2: drop the hop below `MIN_CONFIDENCE` or on a same-root repeat; otherwise push the
     /// node, add it to the hearer's `known`, bump the teller's `times_told`, and credit corroboration.
     fn apply_hop(&mut self, tick: u64, hop: PendingHop, agents: &[Agent]) {
-        todo!()
+        let root = self.claims[hop.parent].root;
+        if hop.confidence < MIN_CONFIDENCE || self.holds(hop.hearer, hop.proposition, root) {
+            return;
+        }
+        // Corroboration: the hearer already holds this proposition, necessarily from another root
+        // (same root was rejected above). Credit whoever told them first; nobody if it was a root,
+        // and nobody if the first teller is telling again (no corroborating yourself).
+        let first = self.known[hop.hearer].iter().find(|k| self.claims[k.claim].proposition == hop.proposition);
+        if let Some(t) = first.and_then(|k| self.claims[k.claim].teller).filter(|&t| t != hop.teller) {
+            self.earned[t] = (self.earned[t] + CORROBORATION_BONUS).min(EARNED_MAX);
+        }
+        if self.contradicts_sighting(hop.hearer, hop.proposition) {
+            let t = hop.teller;
+            self.earned[t] = (self.earned[t] + SIGHTING_CONTRADICT_PENALTY).max(EARNED_MIN);
+        }
+
+        let id = self.claims.len();
+        self.claims.push(Claim {
+            origin: Origin::Hop,
+            parent: Some(hop.parent),
+            root,
+            teller: Some(hop.teller),
+            hearer: hop.hearer,
+            tick,
+            confidence: hop.confidence,
+            proposition: hop.proposition,
+        });
+        self.known[hop.hearer].push(Known { claim: id, times_told: 0 });
+        let told = self.known[hop.teller].iter_mut().find(|k| k.claim == hop.parent);
+        told.expect("teller holds the claim they told").times_told += 1;
     }
 
     /// `(0.1 + 0.3·fear + 0.2·loneliness) × (2 if Socializing) × (0.5 + influence)`, capped at 1.
     fn p_speak(&self, agents: &[Agent], id: usize) -> f32 {
-        todo!()
+        let a = &agents[id];
+        // Only once they're at the gathering spot, not while walking there.
+        let social = if matches!(a.doing, Doing::Busy(Action::Socialize, _)) { 2.0 } else { 1.0 };
+        let base = 0.1 + 0.3 * a.beliefs.fear + 0.2 * a.needs.loneliness;
+        (base * social * (0.5 + self.influence(agents, id))).min(1.0)
     }
 
     /// Weighted random over `known[teller]` by `confidence / (1 + times_told × (1 − influence))`.
@@ -176,9 +209,37 @@ impl RumorEngine {
         todo!()
     }
 
-    /// `teller_conf × HOP_DECAY × trust × lean`, capped at 1.
-    fn hearer_confidence(&self, claim: ClaimId, teller_influence: f32, hearer: usize, agent: &Agent) -> f32 {
-        todo!()
+    /// `teller_conf × HOP_DECAY × trust × lean`, capped at 1. Takes the proposition as heard,
+    /// which differs from `claim`'s if it mutated, since lean depends on the detail.
+    fn hearer_confidence(
+        &self,
+        claim: ClaimId,
+        proposition: Proposition,
+        teller_influence: f32,
+        agents: &[Agent],
+        hearer: usize,
+    ) -> f32 {
+        let faith = agents[hearer].beliefs.faith;
+        let mut lean = match proposition {
+            Proposition::DoomIsReal(true) => 0.5 + faith,
+            Proposition::ProphetIsFraud(true) => 1.5 - faith,
+            _ => 1.0,
+        };
+        if self.contradicts_sighting(hearer, proposition) {
+            lean *= 0.3;
+        }
+        let trust = 0.5 + teller_influence;
+        (self.claims[claim].confidence * HOP_DECAY * trust * lean).min(1.0)
+    }
+
+    /// The hearer saw someone hoarding, and this claim names someone else.
+    /// Only `Hoarder` has a detail to disagree on.
+    fn contradicts_sighting(&self, hearer: usize, proposition: Proposition) -> bool {
+        let Proposition::Hoarder(named) = proposition else { return false };
+        self.known[hearer].iter().any(|k| {
+            let c = &self.claims[k.claim];
+            c.origin == Origin::Sighting && matches!(c.proposition, Proposition::Hoarder(seen) if seen != named)
+        })
     }
 
     /// With `p = 0.05 + 0.15 × teller fear`, swap a `Hoarder(id)` to someone in the teller's sight
@@ -189,7 +250,10 @@ impl RumorEngine {
 
     /// Does `agent` already hold this proposition from this root?
     fn holds(&self, agent: usize, proposition: Proposition, root: ClaimId) -> bool {
-        todo!()
+        self.known[agent].iter().any(|k| {
+            let c = &self.claims[k.claim];
+            c.proposition == proposition && c.root == root
+        })
     }
 
     /// Give each agent in sight of a hoarding agent one `Sighting` root at `SIGHTING_CONFIDENCE`,
@@ -298,28 +362,137 @@ mod tests {
         check(Station::Priest, 1.0, 0.0, 0.0, 0.5); // loyalty term, not fear
     }
 
+    /// `n` townsfolk at fear 0.5, so each has influence exactly 0.3 (trust 0.8).
+    fn town(n: usize) -> (RumorEngine, Vec<Agent>) {
+        let mut rng = Rng::new(7);
+        let agents = (0..n)
+            .map(|_| {
+                let mut a = Agent::new(0, Pos { x: 0, y: 0 }, &mut rng);
+                a.beliefs.fear = 0.5;
+                a
+            })
+            .collect();
+        (RumorEngine::new(1, n), agents)
+    }
+
+    /// One unmutated hop of the claim `teller` holds last, computed the way the collect phase will.
+    fn tell(r: &mut RumorEngine, agents: &[Agent], teller: usize, hearer: usize) {
+        let parent = r.known[teller].last().expect("teller knows something").claim;
+        let proposition = r.claims[parent].proposition;
+        let confidence = r.hearer_confidence(parent, proposition, r.influence(agents, teller), agents, hearer);
+        r.apply_hop(0, PendingHop { parent, teller, hearer, confidence, proposition }, agents);
+    }
+
+    const PER_HOP: f32 = HOP_DECAY * 0.8; // trust 0.8, lean 1
+
     #[test]
-    #[ignore]
     fn decay_chain_exact_per_hop() {
-        todo!()
+        // A yes/no proposition with lean 1.0: never mutates, so the chain is pure decay.
+        let (mut r, agents) = town(4);
+        let root = r.plant(0, 0, Proposition::DateMiscalculated(true), 1.0);
+        for i in 0..3 {
+            tell(&mut r, &agents, i, i + 1);
+        }
+        let mut want = 1.0;
+        for (id, c) in r.claims.iter().enumerate().skip(1) {
+            want *= PER_HOP;
+            assert!((c.confidence - want).abs() < 1e-6, "hop {id}: got {}, want {want}", c.confidence);
+            assert_eq!((c.origin, c.parent, c.root), (Origin::Hop, Some(id - 1), root));
+            assert_eq!((c.teller, c.hearer), (Some(id - 1), id));
+            assert_eq!(r.known[id - 1].last().unwrap().times_told, 1);
+        }
     }
 
     #[test]
-    #[ignore]
+    fn lean_and_cap() {
+        let (mut r, mut agents) = town(2);
+        agents[1].beliefs.faith = 0.2;
+        let doom = r.plant(0, 0, Proposition::DoomIsReal(true), 1.0);
+        let got = r.hearer_confidence(doom, Proposition::DoomIsReal(true), 0.3, &agents, 1);
+        assert!((got - PER_HOP * 0.7).abs() < 1e-6, "doom lean 0.5 + faith: {got}");
+        let fraud = r.plant(0, 0, Proposition::ProphetIsFraud(true), 1.0);
+        let got = r.hearer_confidence(fraud, Proposition::ProphetIsFraud(true), 0.3, &agents, 1);
+        assert!((got - PER_HOP * 1.3).abs() < 1e-6, "fraud lean 1.5 - faith: {got}");
+        // Trust 1.5 and lean 1.3 push it past 1.
+        assert_eq!(r.hearer_confidence(fraud, Proposition::ProphetIsFraud(true), 1.0, &agents, 1), 1.0);
+    }
+
+    #[test]
+    fn contradicting_sighting_cuts_lean_and_costs_teller() {
+        let (mut r, agents) = town(2);
+        // No sightings exist until Action::Hoard, so fake one: agent 1 saw agent 5 hoarding.
+        r.claims.push(Claim {
+            origin: Origin::Sighting,
+            parent: None,
+            root: 0,
+            teller: None,
+            hearer: 1,
+            tick: 0,
+            confidence: SIGHTING_CONFIDENCE,
+            proposition: Proposition::Hoarder(5),
+        });
+        r.known[1].push(Known { claim: 0, times_told: 0 });
+        r.plant(0, 0, Proposition::Hoarder(9), 1.0);
+        tell(&mut r, &agents, 0, 1);
+        assert!((r.claims[2].confidence - PER_HOP * 0.3).abs() < 1e-6);
+        assert!((r.earned[0] - SIGHTING_CONTRADICT_PENALTY).abs() < 1e-6);
+    }
+
+    #[test]
     fn chain_stops_below_cutoff() {
-        todo!()
+        // 0.68^n first drops below 0.1 at n = 6, so hops 1..=5 land and the 6th is dropped.
+        let (mut r, agents) = town(7);
+        r.plant(0, 0, Proposition::DateMiscalculated(true), 1.0);
+        for i in 0..6 {
+            tell(&mut r, &agents, i, i + 1);
+        }
+        assert_eq!(r.claims.len(), 6);
+        assert!(r.claims.iter().all(|c| c.confidence >= MIN_CONFIDENCE));
+        assert!(r.known[6].is_empty());
     }
 
     #[test]
-    #[ignore]
     fn same_root_round_trip_adds_nothing() {
-        todo!()
+        let (mut r, agents) = town(2);
+        r.plant(0, 0, Proposition::DateMiscalculated(true), 1.0);
+        tell(&mut r, &agents, 0, 1);
+        tell(&mut r, &agents, 1, 0);
+        assert_eq!(r.claims.len(), 2);
+        assert_eq!(r.known[0].len(), 1);
+        assert_eq!(r.known[1][0].times_told, 0, "a rejected hop doesn't count as told");
     }
 
     #[test]
-    #[ignore]
     fn corroboration_credits_first_teller() {
-        todo!()
+        let p = Proposition::DateMiscalculated(true);
+        let (mut r, agents) = town(4);
+        r.plant(0, 0, p, 1.0);
+        r.plant(0, 2, p, 1.0);
+        r.earned[0] = 0.28;
+        tell(&mut r, &agents, 0, 1); // agent 1's first: from 0
+        tell(&mut r, &agents, 2, 1); // same proposition, other root: kept, and 0 gets credit
+        assert_eq!(r.known[1].len(), 2);
+        assert_eq!(r.earned[0], EARNED_MAX, "0.28 + 0.05 clamps to 0.3");
+        assert_eq!(r.earned[2], 0.0);
+
+        // Agent 3 first got it as a plant, so a second root credits nobody.
+        r.plant(0, 3, p, 1.0);
+        tell(&mut r, &agents, 2, 3);
+        assert_eq!(r.known[3].len(), 2);
+        assert_eq!(r.earned[2], 0.0);
+        assert_eq!(r.earned[0], EARNED_MAX);
+    }
+
+    #[test]
+    fn no_corroborating_yourself() {
+        let p = Proposition::DateMiscalculated(true);
+        let (mut r, agents) = town(2);
+        r.plant(0, 0, p, 1.0);
+        tell(&mut r, &agents, 0, 1);
+        r.plant(0, 0, p, 1.0); // a second root, also in agent 0's head
+        tell(&mut r, &agents, 0, 1);
+        assert_eq!(r.known[1].len(), 2);
+        assert_eq!(r.earned[0], 0.0);
     }
 
     #[test]
