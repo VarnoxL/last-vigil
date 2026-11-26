@@ -6,7 +6,7 @@
 // Remove once the hearing check is wired into `Sim::tick`.
 #![allow(dead_code, unused_variables)]
 
-use crate::agent::Agent;
+use crate::agent::{Agent, Station};
 use crate::rng::Rng;
 use crate::world::{Pos, World};
 
@@ -134,7 +134,11 @@ impl RumorEngine {
 
     /// `clamp(station_base + derived + earned, 0, 1)`, computed fresh and never stored.
     pub fn influence(&self, id: usize, agent: &Agent) -> f32 {
-        todo!("station.base() + derived from loyalty or fear + self.earned[id]")
+        let derived = match agent.station {
+            Station::Prophet | Station::Priest => 0.2 * (agent.beliefs.loyalty - 0.5),
+            _ => 0.1 * (agent.beliefs.fear - 0.5),
+        };
+        (agent.station.base() + derived + self.earned[id]).clamp(0.0, 1.0)
     }
 
     /// Run every `CHECK_EVERY` ticks. Collect first from start-of-check state, then apply in order,
@@ -210,6 +214,38 @@ pub fn belief_feedback(agent: &mut Agent, proposition: Proposition, confidence: 
 // The design doc's test list. Remove `#[ignore]` from each one as you write it.
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn plant_makes_a_root_claim() {
+        let mut rumors = RumorEngine::new(1, 3);
+        let id = rumors.plant(0, 0, Proposition::DoomIsReal(true), 0.9);
+
+        assert_eq!(id, 0);
+        let claim = &rumors.claims[id];
+        assert_eq!(claim.root, id);
+        assert_eq!(claim.teller, None);
+        assert_eq!(rumors.known[0].len(), 1);
+    }
+
+    #[test]
+    fn influence_formula_and_clamp() {
+        let mut rumors = RumorEngine::new(1, 1);
+        let mut agent = Agent::new(0, Pos { x: 0, y: 0 }, &mut Rng::new(1));
+        let mut check = |station, fear, loyalty, earned, want: f32| {
+            agent.station = station;
+            agent.beliefs.fear = fear;
+            agent.beliefs.loyalty = loyalty;
+            rumors.earned[0] = earned;
+            let got = rumors.influence(0, &agent);
+            assert!((got - want).abs() < 1e-6, "{station:?}: got {got}, want {want}");
+        };
+        check(Station::Townsfolk, 0.5, 0.0, 0.0, 0.3);
+        check(Station::Prophet, 0.0, 1.0, 0.3, 1.0); // 1.2 clamps down
+        check(Station::Beggar, 0.0, 0.0, -0.2, 0.0); // -0.15 clamps up
+        check(Station::Priest, 1.0, 0.0, 0.0, 0.5); // loyalty term, not fear
+    }
+
     #[test]
     #[ignore]
     fn decay_chain_exact_per_hop() {
