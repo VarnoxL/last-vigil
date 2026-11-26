@@ -429,7 +429,9 @@ flowchart TD
     H -- "yes" --> H2["hoarder = below(agent_count)"]:::built
     H -- "no" --> H3["hoarder = None"]:::built
     H2 & H3 --> AG["for id in 0..50:<br/>hunger, fatigue, loneliness = unit × 0.5<br/>faith = unit · fear = 0 · loyalty = faith × unit<br/>5 draws per agent, in id order"]:::built
-    AG --> FR["truth.fragments() → 3 or 4 Fragments<br/>held by ghosts later, never read by agents"]:::built
+    SEED --> RNG3["Station rng = Rng::new(seed XOR 0x53_5441_5449_4F4E)<br/>'STATION' · its own stream"]:::built
+    AG & RNG3 --> ST["assign_stations: 8 distinct agents get<br/>Prophet, Priest, Tavern keeper, 2 Elders, 3 Beggars<br/>everyone else stays Townsfolk"]:::built
+    ST --> FR["truth.fragments() → 3 or 4 Fragments<br/>held by ghosts later, never read by agents"]:::built
 ```
 
 Each outcome's probability:
@@ -544,7 +546,7 @@ flowchart TD
     START(["hearing_check(tick, world, agents)<br/>every CHECK_EVERY = 10 ticks"]):::stub --> P1
 
     subgraph COLLECT["Phase 1 · collect_hops · reads the state at the start of the check only"]
-        P1["for each teller"]:::stub --> INF["influence = clamp(station.base + derived + earned, 0, 1)<br/>derived = 0.2 × (loyalty − 0.5) for the prophet and priest<br/>derived = 0.1 × (fear − 0.5) for everyone else<br/>computed fresh each time, never stored"]:::stub
+        P1["for each teller"]:::stub --> INF["influence = clamp(station.base + derived + earned, 0, 1)<br/>derived = 0.2 × (loyalty − 0.5) for the prophet and priest<br/>derived = 0.1 × (fear − 0.5) for everyone else<br/>computed fresh each time, never stored"]:::built
         INF --> PS{"roll p_speak<br/>(0.1 + 0.3·fear + 0.2·loneliness)<br/>× 2 if Socializing<br/>× (0.5 + influence), cap 1"}:::stub
         PS -- "silent" --> P1
         PS -- "speaks" --> PC["pick_claim: weighted over known[teller] by<br/>confidence / (1 + times_told × (1 − influence))<br/>influential agents don't tire of repeating themselves"]:::stub
@@ -593,7 +595,7 @@ Because collection reads only the state from the start of the check, a claim mov
 | `DateMiscalculated(true)` | `faith −= 0.05·c·faith` |
 | `Hoarder(_)` | `fear += 0.05·c·(1 − fear)` |
 
-**Stations** (to be assigned from the seed): 1 Prophet 0.8 · 1 Priest 0.6 · 1 Tavern keeper 0.5 · 2 Elders 0.5 · 42 Townsfolk 0.3 · 3 Beggars 0.1. Today every agent is `Townsfolk`.
+**Stations** (assigned from the seed in `Sim::new`, on their own rng stream): 1 Prophet 0.8 · 1 Priest 0.6 · 1 Tavern keeper 0.5 · 2 Elders 0.5 · 42 Townsfolk 0.3 · 3 Beggars 0.1. They set influence only; they don't change behavior yet.
 
 ### 9. Claim arena and ancestry (ADR 0004)
 
