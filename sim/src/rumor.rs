@@ -211,11 +211,14 @@ pub fn in_range(world: &World, a: Pos, b: Pos, range: u16) -> bool {
     if a.x.abs_diff(b.x).max(a.y.abs_diff(b.y)) > range {
         return false;
     }
-    if world.room_of(a) != world.room_of(b) {
+    if !world.same_room(a, b) {
         return false;
     }
-    // Bresenham from a to b; any wall tile on the line blocks. Rooms are plain
-    // rectangles, so this only bites outdoors (a line across a building corner).
+    // Bresenham can step through different tiles a→b than b→a, so always walk
+    // from the smaller endpoint to keep the answer symmetric.
+    let (a, b) = if (a.x, a.y) <= (b.x, b.y) { (a, b) } else { (b, a) };
+    // Any wall tile on the line blocks. Rooms are plain rectangles, so this
+    // only bites outdoors (a line across a building corner).
     let (x1, y1) = (b.x as i32, b.y as i32);
     let (mut x, mut y) = (a.x as i32, a.y as i32);
     let (dx, dy) = ((x1 - x).abs(), -(y1 - y).abs());
@@ -337,8 +340,19 @@ mod tests {
         }
         // Control: two outdoor tiles 2 apart with nothing between.
         assert!(in_range(&world, p(4, 17), p(6, 17), HEAR_RANGE));
-        // Both outdoors, but the line cuts the home's top-left corner (2, 18).
+        // Both outdoors, so only the wall check decides. Each pair both ways round.
+        // The line cuts the home's top-left corner (2, 18): blocked.
         assert!(!in_range(&world, p(1, 19), p(3, 17), SIGHT_RANGE));
+        assert!(!in_range(&world, p(3, 17), p(1, 19), SIGHT_RANGE));
+        // Grazes the corner; Bresenham's tie-break differs by direction, the answer must not.
+        assert!(in_range(&world, p(1, 18), p(3, 17), SIGHT_RANGE));
+        assert!(in_range(&world, p(3, 17), p(1, 18), SIGHT_RANGE));
+
+        // Home 0's door (4, 21) is in both rooms; floor and street are not.
+        assert!(in_range(&world, p(4, 21), p(4, 22), HEAR_RANGE));
+        assert!(in_range(&world, p(4, 22), p(4, 21), HEAR_RANGE));
+        assert!(in_range(&world, p(4, 21), p(4, 20), HEAR_RANGE));
+        assert!(!in_range(&world, p(4, 20), p(4, 22), HEAR_RANGE));
         // Clear line, but 4 tiles apart.
         assert!(!in_range(&world, p(4, 17), p(8, 17), HEAR_RANGE));
         // TODO: extend to the doc's "no hop and no sighting" once the hearing check exists.
