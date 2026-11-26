@@ -6,7 +6,7 @@
 // Remove once the hearing check is wired into `Sim::tick`.
 #![allow(dead_code, unused_variables)]
 
-use crate::agent::Agent;
+use crate::agent::{Agent, Station};
 use crate::rng::Rng;
 use crate::world::{Pos, World};
 
@@ -133,8 +133,16 @@ impl RumorEngine {
     }
 
     /// `clamp(station_base + derived + earned, 0, 1)`, computed fresh and never stored.
-    pub fn influence(&self, id: usize, agent: &Agent) -> f32 {
-        todo!("station.base() + derived from loyalty or fear + self.earned[id]")
+    /// Takes the whole agent list so the id and the agent can't come from different agents.
+    /// The engine is always built with the sim's agent count, so `earned` lines up with `agents`.
+    pub fn influence(&self, agents: &[Agent], id: usize) -> f32 {
+        debug_assert_eq!(self.earned.len(), agents.len(), "RumorEngine built with the wrong agent count");
+        let agent = &agents[id];
+        let derived = match agent.station {
+            Station::Prophet | Station::Priest => 0.2 * (agent.beliefs.loyalty - 0.5),
+            _ => 0.1 * (agent.beliefs.fear - 0.5),
+        };
+        (agent.station.base() + derived + self.earned[id]).clamp(0.0, 1.0)
     }
 
     /// Run every `CHECK_EVERY` ticks. Collect first from start-of-check state, then apply in order,
@@ -159,7 +167,7 @@ impl RumorEngine {
     }
 
     /// `(0.1 + 0.3·fear + 0.2·loneliness) × (2 if Socializing) × (0.5 + influence)`, capped at 1.
-    fn p_speak(&self, id: usize, agent: &Agent) -> f32 {
+    fn p_speak(&self, agents: &[Agent], id: usize) -> f32 {
         todo!()
     }
 
@@ -210,6 +218,53 @@ pub fn belief_feedback(agent: &mut Agent, proposition: Proposition, confidence: 
 // The design doc's test list. Remove `#[ignore]` from each one as you write it.
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn plant_makes_a_root_claim() {
+        let mut rumors = RumorEngine::new(1, 3);
+        let id = rumors.plant(0, 0, Proposition::DoomIsReal(true), 0.9);
+
+        assert_eq!(id, 0);
+        let claim = &rumors.claims[id];
+        assert_eq!(claim.origin, Origin::Plant);
+        assert_eq!(claim.parent, None);
+        assert_eq!(claim.root, id);
+        assert_eq!(claim.teller, None);
+        assert_eq!(claim.hearer, 0);
+        assert_eq!(rumors.known[0].len(), 1);
+        assert_eq!(rumors.known[0][0].claim, id);
+        assert_eq!(rumors.known[0][0].times_told, 0);
+
+        // A second plant gets the next id and its own root, in the other agent's head.
+        let second = rumors.plant(5, 2, Proposition::Hoarder(1), 0.5);
+        assert_eq!(second, 1);
+        assert_eq!(rumors.claims[second].root, second);
+        assert_eq!(rumors.claims[second].hearer, 2);
+        assert_eq!(rumors.known[2][0].claim, second);
+        assert_eq!(rumors.known[0].len(), 1);
+    }
+
+    #[test]
+    fn influence_formula_and_clamp() {
+        let mut rumors = RumorEngine::new(1, 1);
+        let mut agents = vec![Agent::new(0, Pos { x: 0, y: 0 }, &mut Rng::new(1))];
+        let mut check = |station, fear, loyalty, earned, want: f32| {
+            agents[0].station = station;
+            agents[0].beliefs.fear = fear;
+            agents[0].beliefs.loyalty = loyalty;
+            rumors.earned[0] = earned;
+            let got = rumors.influence(&agents, 0);
+            assert!((got - want).abs() < 1e-6, "{station:?}: got {got}, want {want}");
+        };
+        check(Station::Townsfolk, 0.5, 0.0, 0.0, 0.3);
+        check(Station::Townsfolk, 0.9, 0.0, 0.0, 0.34); // fear coefficient and sign, unclamped
+        check(Station::Elder, 0.0, 0.0, 0.1, 0.55); // earned is added, unclamped
+        check(Station::Prophet, 0.0, 1.0, 0.3, 1.0); // 1.2 clamps down
+        check(Station::Beggar, 0.0, 0.0, -0.2, 0.0); // -0.15 clamps up
+        check(Station::Priest, 1.0, 0.0, 0.0, 0.5); // loyalty term, not fear
+    }
+
     #[test]
     #[ignore]
     fn decay_chain_exact_per_hop() {
