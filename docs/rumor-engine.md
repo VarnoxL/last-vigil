@@ -57,7 +57,11 @@ earned    ∈ [−0.2, +0.3], drifts toward 0 at 10% per in-game day
             +0.05  corroboration: hearer gets the same proposition from a different root;
                    credited to whoever told the hearer first (none if that was a sighting)
             +0.10  a hearer sights something matching a claim you told them
+                   (paid in record_sightings: claim first, sighting second)
             −0.10  your claim reaches a hearer whose sighting contradicts it
+                   (charged in apply_hop: sighting first, claim second; charged even if the
+                   hop is rejected, and again each time you tell them. A sighting that
+                   contradicts a claim heard earlier costs nothing, so nothing is charged twice)
 ```
 
 ## Hearing check (every 10 ticks)
@@ -65,13 +69,13 @@ earned    ∈ [−0.2, +0.3], drifts toward 0 at 10% per in-game day
 Two phases. First, collect `Vec<PendingHop>` reading only the state at the start of the check. Then apply them all in order. A claim moves at most one hop per check.
 
 - **Range:** hearing is ≤ 3 tiles and sight is ≤ 6 tiles. Both require the same room (same building, or both outdoors), and walls block them.
-- **Speak:** `p_speak = (0.1 + 0.3·fear + 0.2·loneliness) × (2 if Socializing else 1) × (0.5 + influence)`, capped at 1.
-- **Pick a claim:** weighted random by `confidence / (1 + times_told × (1 − influence))`.
+- **Speak:** `p_speak = (0.1 + 0.3·fear + 0.2·loneliness) × (2 if Socializing else 1) × (0.5 + influence)`, capped at 1. The ×2 needs `Busy(Socialize)`, at the tavern; walking there doesn't count.
+- **Pick a claim:** weighted random by `confidence / (1 + times_told × (1 − influence))`. Every hop that was spoken counts as told, even if the hearer rejects it, so a teller whose neighbours already hold a claim moves on to others.
 - **Audience:** influence ≥ 0.7 broadcasts to everyone in hearing range. Otherwise the teller picks one random agent in range.
 - **Hearer confidence:** `teller_conf × 0.85 × trust × lean`, capped at 1.
   - `trust = 0.5 + teller influence`
   - `lean`: `DoomIsReal(true)` → `0.5 + faith`; `ProphetIsFraud(true)` → `1.5 − faith`; otherwise `1.0`
-  - Multiply `lean` by 0.3 if the hearer holds a sighting of the same kind with a different detail.
+  - Multiply `lean` by 0.3 if the hearer holds a sighting of the same kind with a different detail and none matching it.
 - **Reject the hop** if the result is below 0.1, or if the hearer already holds the same proposition with the same root.
 - **Keep duplicates** that come from a different root; corroboration fires on them.
 - **Mutation:** `p = 0.05 + 0.15 × teller fear`. It swaps only `Hoarder(id)`: to a random agent in the teller's sight range, otherwise any agent. Yes/no claims never flip. The mutated node keeps `parent` and `root`.

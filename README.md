@@ -547,7 +547,7 @@ flowchart TD
 
     subgraph COLLECT["Phase 1 · collect_hops · reads the state at the start of the check only"]
         P1["for each teller"]:::stub --> INF["influence = clamp(station.base + derived + earned, 0, 1)<br/>derived = 0.2 × (loyalty − 0.5) for the prophet and priest<br/>derived = 0.1 × (fear − 0.5) for everyone else<br/>computed fresh each time, never stored"]:::built
-        INF --> PS{"roll p_speak<br/>(0.1 + 0.3·fear + 0.2·loneliness)<br/>× 2 if Socializing<br/>× (0.5 + influence), cap 1"}:::built
+        INF --> PS{"roll p_speak<br/>(0.1 + 0.3·fear + 0.2·loneliness)<br/>× 2 if Busy(Socialize) at the tavern<br/>× (0.5 + influence), cap 1"}:::built
         PS -- "silent" --> P1
         PS -- "speaks" --> PC["pick_claim: weighted over known[teller] by<br/>confidence / (1 + times_told × (1 − influence))<br/>influential agents don't tire of repeating themselves"]:::stub
         PC --> AUD{"influence ≥ 0.7?"}:::stub
@@ -561,14 +561,15 @@ flowchart TD
         SW & KEEP --> PH["push PendingHop"]:::stub
     end
 
-    PH --> AP
+    PH --> AP0
 
     subgraph APPLY["Phase 2 · apply_hop · in collect order"]
-        AP{"confidence below MIN_CONFIDENCE 0.1?"}:::built
+        AP0["teller times_told += 1 · −0.10 earned to teller<br/>if the hearer's sighting contradicts it<br/>(every spoken hop, accepted or not)"]:::built
+        AP0 --> AP{"confidence below MIN_CONFIDENCE 0.1?"}:::built
         AP -- "yes" --> DROP1["drop"]:::rej
         AP -- "no" --> SR{"hearer already holds the<br/>same proposition from the same root?"}:::built
         SR -- "yes" --> DROP2["drop: A→B→A adds nothing"]:::rej
-        SR -- "no" --> PUSH["claims.push(Claim origin Hop, parent, root kept)<br/>known[hearer].push · teller times_told += 1"]:::built
+        SR -- "no" --> PUSH["claims.push(Claim origin Hop, parent, root kept)<br/>known[hearer].push"]:::built
         PUSH --> COR{"same proposition already held<br/>from a different root?"}:::built
         COR -- "yes" --> CB["corroboration: +0.05 earned to whoever<br/>told the hearer first (nobody if it was a plant or sighting,<br/>or if the first teller is telling again)"]:::built
         COR -- "no" --> FB
@@ -584,7 +585,7 @@ Because collection reads only the state from the start of the check, a claim mov
 |---|---|
 | Corroboration: a hearer gets the same proposition from a different root | +0.05 to whoever told them first |
 | A hearer later sights something that matches what you told them | +0.10 |
-| Your claim reaches a hearer whose own sighting contradicts it | −0.10 |
+| Your claim reaches a hearer whose own earlier sighting contradicts it, even if they reject it | −0.10 |
 
 **Belief feedback** when an agent accepts a claim with confidence *c*:
 

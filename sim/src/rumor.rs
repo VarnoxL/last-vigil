@@ -160,10 +160,19 @@ impl RumorEngine {
         todo!()
     }
 
-    /// Phase 2: drop the hop below `MIN_CONFIDENCE` or on a same-root repeat; otherwise push the
-    /// node, add it to the hearer's `known`, bump the teller's `times_told`, and credit corroboration.
+    /// Phase 2: every hop that was spoken bumps the teller's `times_told` and pays the sighting
+    /// penalty, accepted or not. Then drop it below `MIN_CONFIDENCE` or on a same-root repeat;
+    /// otherwise credit corroboration, push the node and add it to the hearer's `known`.
     fn apply_hop(&mut self, tick: u64, hop: PendingHop, agents: &[Agent]) {
         let root = self.claims[hop.parent].root;
+        let told = self.known[hop.teller].iter_mut().find(|k| k.claim == hop.parent);
+        told.expect("teller holds the claim they told").times_told += 1;
+        // The claim reached a hearer whose sighting says otherwise. Charged here, before the
+        // drops, since the ×0.3 lean usually pushes these hops below MIN_CONFIDENCE.
+        if self.contradicts_sighting(hop.hearer, hop.proposition) {
+            let t = hop.teller;
+            self.earned[t] = (self.earned[t] + SIGHTING_CONTRADICT_PENALTY).max(EARNED_MIN);
+        }
         if hop.confidence < MIN_CONFIDENCE || self.holds(hop.hearer, hop.proposition, root) {
             return;
         }
@@ -173,10 +182,6 @@ impl RumorEngine {
         let first = self.known[hop.hearer].iter().find(|k| self.claims[k.claim].proposition == hop.proposition);
         if let Some(t) = first.and_then(|k| self.claims[k.claim].teller).filter(|&t| t != hop.teller) {
             self.earned[t] = (self.earned[t] + CORROBORATION_BONUS).min(EARNED_MAX);
-        }
-        if self.contradicts_sighting(hop.hearer, hop.proposition) {
-            let t = hop.teller;
-            self.earned[t] = (self.earned[t] + SIGHTING_CONTRADICT_PENALTY).max(EARNED_MIN);
         }
 
         let id = self.claims.len();
@@ -191,11 +196,10 @@ impl RumorEngine {
             proposition: hop.proposition,
         });
         self.known[hop.hearer].push(Known { claim: id, times_told: 0 });
-        let told = self.known[hop.teller].iter_mut().find(|k| k.claim == hop.parent);
-        told.expect("teller holds the claim they told").times_told += 1;
     }
 
-    /// `(0.1 + 0.3·fear + 0.2·loneliness) × (2 if Socializing) × (0.5 + influence)`, capped at 1.
+    /// `(0.1 + 0.3·fear + 0.2·loneliness) × (2 if at the tavern socializing) × (0.5 + influence)`,
+    /// capped at 1.
     fn p_speak(&self, agents: &[Agent], id: usize) -> f32 {
         let a = &agents[id];
         // Only once they're at the gathering spot, not while walking there.
@@ -232,14 +236,21 @@ impl RumorEngine {
         (self.claims[claim].confidence * HOP_DECAY * trust * lean).min(1.0)
     }
 
-    /// The hearer saw someone hoarding, and this claim names someone else.
+    /// The hearer saw someone else hoarding and never saw the one this claim names.
     /// Only `Hoarder` has a detail to disagree on.
     fn contradicts_sighting(&self, hearer: usize, proposition: Proposition) -> bool {
         let Proposition::Hoarder(named) = proposition else { return false };
-        self.known[hearer].iter().any(|k| {
+        let mut other = false;
+        for k in &self.known[hearer] {
             let c = &self.claims[k.claim];
-            c.origin == Origin::Sighting && matches!(c.proposition, Proposition::Hoarder(seen) if seen != named)
-        })
+            if let (Origin::Sighting, Proposition::Hoarder(seen)) = (c.origin, c.proposition) {
+                if seen == named {
+                    return false;
+                }
+                other = true;
+            }
+        }
+        other
     }
 
     /// With `p = 0.05 + 0.15 × teller fear`, swap a `Hoarder(id)` to someone in the teller's sight
@@ -257,7 +268,9 @@ impl RumorEngine {
     }
 
     /// Give each agent in sight of a hoarding agent one `Sighting` root at `SIGHTING_CONFIDENCE`,
-    /// at most one per proposition, and apply the sighting bonus/penalty to earned influence.
+    /// at most one per proposition, and pay the +0.10 bonus to whoever told them a matching claim.
+    /// No penalty here: a sighting that contradicts a claim heard earlier costs nothing, and one
+    /// that came first is charged in `apply_hop`, so a disagreement is never charged twice.
     pub fn record_sightings(&mut self, tick: u64, world: &World, agents: &[Agent]) {
         todo!("needs Action::Hoard first")
     }
@@ -436,6 +449,35 @@ mod tests {
         tell(&mut r, &agents, 0, 1);
         assert!((r.claims[2].confidence - PER_HOP * 0.3).abs() < 1e-6);
         assert!((r.earned[0] - SIGHTING_CONTRADICT_PENALTY).abs() < 1e-6);
+
+        // A weak claim drops below the cutoff but still costs the teller.
+        r.plant(0, 0, Proposition::Hoarder(8), 0.3);
+        tell(&mut r, &agents, 0, 1);
+        assert_eq!(r.claims.len(), 4, "0.3 × 0.68 × 0.3 < 0.1: dropped");
+        assert!((r.earned[0] - 2.0 * SIGHTING_CONTRADICT_PENALTY).abs() < 1e-6);
+        assert_eq!(r.known[0].last().unwrap().times_told, 1, "dropped but still told");
+    }
+
+    #[test]
+    fn matching_sighting_cancels_contradiction() {
+        let (mut r, _) = town(2);
+        for seen in [5, 9] {
+            let id = r.claims.len();
+            r.claims.push(Claim {
+                origin: Origin::Sighting,
+                parent: None,
+                root: id,
+                teller: None,
+                hearer: 1,
+                tick: 0,
+                confidence: SIGHTING_CONFIDENCE,
+                proposition: Proposition::Hoarder(seen),
+            });
+            r.known[1].push(Known { claim: id, times_told: 0 });
+        }
+        assert!(!r.contradicts_sighting(1, Proposition::Hoarder(9)), "saw 9 too");
+        assert!(r.contradicts_sighting(1, Proposition::Hoarder(3)));
+        assert!(!r.contradicts_sighting(0, Proposition::Hoarder(3)), "no sightings at all");
     }
 
     #[test]
@@ -459,7 +501,7 @@ mod tests {
         tell(&mut r, &agents, 1, 0);
         assert_eq!(r.claims.len(), 2);
         assert_eq!(r.known[0].len(), 1);
-        assert_eq!(r.known[1][0].times_told, 0, "a rejected hop doesn't count as told");
+        assert_eq!(r.known[1][0].times_told, 1, "a rejected hop still counts as told");
     }
 
     #[test]
