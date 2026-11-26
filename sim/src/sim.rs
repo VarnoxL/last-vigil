@@ -1,4 +1,4 @@
-use crate::agent::{Action, Agent, Doing};
+use crate::agent::{Action, Agent, Doing, SPECIAL_STATIONS};
 use crate::rng::Rng;
 use crate::rumor::{ClaimId, Proposition, RumorEngine};
 use crate::world::{BuildingKind, Pos, World};
@@ -107,12 +107,13 @@ impl Sim {
         let truth = Truth::generate(&mut rng, agent_count);
         let homes: Vec<usize> =
             (0..world.buildings.len()).filter(|&i| world.buildings[i].kind == BuildingKind::Home).collect();
-        let agents = (0..agent_count)
+        let mut agents: Vec<Agent> = (0..agent_count)
             .map(|id| {
                 let home = homes[id % homes.len()];
                 Agent::new(home, world.buildings[home].door, &mut rng)
             })
             .collect();
+        assign_stations(seed, &mut agents);
         let rumors = RumorEngine::new(seed, agent_count);
         Self { tick: 0, preset, truth, world, agents, rumors, rng }
     }
@@ -260,9 +261,48 @@ fn duration(action: Action, day: f32) -> u64 {
     (day * frac) as u64
 }
 
+/// Give `SPECIAL_STATIONS` to distinct random agents. Own rng stream, so the sim's draws are
+/// unchanged and a seed plays out the same as before stations existed.
+fn assign_stations(seed: u64, agents: &mut [Agent]) {
+    let mut rng = Rng::new(seed ^ 0x53_5441_5449_4F4E); // "STATION"
+    let mut ids: Vec<usize> = (0..agents.len()).collect();
+    for station in SPECIAL_STATIONS {
+        if ids.is_empty() {
+            break;
+        }
+        let id = ids.swap_remove(rng.below(ids.len()));
+        agents[id].station = station;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Station;
+
+    fn stations(seed: u64, agent_count: usize) -> Vec<Station> {
+        Sim::new(seed, Preset::Quick, agent_count).agents.iter().map(|a| a.station).collect()
+    }
+
+    #[test]
+    fn stations_assigned_from_seed() {
+        let s = stations(42, 50);
+        let count = |st| s.iter().filter(|&&x| x == st).count();
+        assert_eq!(count(Station::Prophet), 1);
+        assert_eq!(count(Station::Priest), 1);
+        assert_eq!(count(Station::TavernKeeper), 1);
+        assert_eq!(count(Station::Elder), 2);
+        assert_eq!(count(Station::Beggar), 3);
+        assert_eq!(count(Station::Townsfolk), 42);
+
+        assert_eq!(s, stations(42, 50));
+        assert_ne!(s, stations(43, 50));
+
+        // A town smaller than the special list fills from the front and doesn't panic.
+        let mut small = stations(42, 3);
+        small.sort_by_key(|st| *st as u8);
+        assert_eq!(small, [Station::Prophet, Station::Priest, Station::TavernKeeper]);
+    }
 
     const TEN_MINUTES: u64 = 10 * 60 * TICKS_PER_SEC;
 

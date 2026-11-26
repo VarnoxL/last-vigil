@@ -48,6 +48,19 @@ pub enum Station {
     Beggar,
 }
 
+/// Stations handed out at run start, in priority order (a small town drops from the end).
+/// Everyone not listed stays `Townsfolk`. Counts from docs/rumor-engine.md.
+pub const SPECIAL_STATIONS: [Station; 8] = [
+    Station::Prophet,
+    Station::Priest,
+    Station::TavernKeeper,
+    Station::Elder,
+    Station::Elder,
+    Station::Beggar,
+    Station::Beggar,
+    Station::Beggar,
+];
+
 impl Station {
     pub fn base(self) -> f32 {
         match self {
@@ -77,7 +90,7 @@ impl Agent {
         let needs = Needs { hunger: rng.unit() * 0.5, fatigue: rng.unit() * 0.5, loneliness: rng.unit() * 0.5 };
         let faith = rng.unit();
         let beliefs = Beliefs { faith, fear: 0.0, loyalty: faith * rng.unit() };
-        // TODO(phase 3): assign stations from the seed (1 prophet, 1 priest, 1 tavern keeper, 2 elders, 3 beggars).
+        // `Sim::new` assigns the special stations once every agent exists.
         Self { pos, station: Station::Townsfolk, home, needs, beliefs, doing: Doing::Idle }
     }
 
