@@ -261,8 +261,13 @@ fn duration(action: Action, day: f32) -> u64 {
     (day * frac) as u64
 }
 
-/// Give `SPECIAL_STATIONS` to distinct random agents. Own rng stream, so the sim's draws are
-/// unchanged and a seed plays out the same as before stations existed.
+/// Give `SPECIAL_STATIONS` to distinct random agents. Own rng stream, so the sim rng's draws
+/// (needs, beliefs, movement) are unchanged. Rumor spread does change, since stations feed `influence`.
+///
+/// TODO: stations don't affect behavior yet. docs/rumor-engine.md wants the tavern keeper working
+/// at the tavern and the prophet and priest favoring the chapel.
+/// TODO(open question): religious stations draw beliefs like townsfolk, so a prophet can roll
+/// loyalty near 0 (influence ~0.7) and rarely pray. Decide whether they get adjusted beliefs.
 fn assign_stations(seed: u64, agents: &mut [Agent]) {
     let mut rng = Rng::new(seed ^ 0x53_5441_5449_4F4E); // "STATION"
     let mut ids: Vec<usize> = (0..agents.len()).collect();
