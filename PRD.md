@@ -100,7 +100,7 @@ This project is a game-like simulation of a haunted medieval town built around a
 - [x] Claim data structure and spatial hearing rules
 - [ ] Stations and influence (station base, derived, earned)
 - [x] Per-hop confidence decay and detail-swap mutation
-- [ ] Hoard action and sightings
+- [x] Hoard action and sightings
 - [ ] Ancestry log and JSON export (serde)
 - [ ] Unit tests for propagation and mutation
 - [ ] Belief feedback from accepted claims (after the tests above pass)

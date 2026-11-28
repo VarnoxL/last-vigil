@@ -8,6 +8,12 @@ pub enum Action {
     Socialize,
     Pray,
     Wander,
+    /// The hidden hoarder grabbing supplies at the market. Only `truth.hoarder` ever picks it,
+    /// and only when few enough eyes are on them (`sim::hoard_gate`).
+    Hoard,
+    /// The second leg of a hoard: carrying the supplies home. Never chosen; `Sim::tick`
+    /// starts it when `Busy(Hoard)` ends.
+    CarryHome,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +102,12 @@ impl Agent {
 
     /// Utility AI: score each action from needs and beliefs and take the best.
     /// The jitter keeps the crowd from moving in lockstep.
-    pub fn choose(&self, rng: &mut Rng) -> Action {
+    ///
+    /// `may_hoard` adds Hoard as a sixth candidate. It's false for everyone but the hidden hoarder,
+    /// so nobody else draws an extra jitter and their rng sequence is unchanged. Hoarding is a
+    /// greedy trip to the market, so it scores off hunger like Eat: below Eat before urgency 0.5,
+    /// above it after.
+    pub fn choose(&self, rng: &mut Rng, may_hoard: bool, urgency: f32) -> Action {
         let (n, b) = (&self.needs, &self.beliefs);
         [
             (Action::Eat, n.hunger),
@@ -106,6 +117,7 @@ impl Agent {
             (Action::Wander, 0.2),
         ]
         .into_iter()
+        .chain(may_hoard.then_some((Action::Hoard, n.hunger * (0.5 + urgency))))
         .map(|(a, s)| (a, s + rng.unit() * 0.1))
         .max_by(|x, y| x.1.total_cmp(&y.1))
         .unwrap()
@@ -120,6 +132,19 @@ impl Agent {
             Action::Socialize => self.needs.loneliness = 0.0,
             Action::Pray => self.beliefs.fear *= 0.5,
             Action::Wander => {}
+            // `Sim::tick` turns a finished Hoard into the walk home instead of calling this.
+            Action::Hoard => {}
+            // They eat from the stash. No other cooldown yet; tune with the rest.
+            Action::CarryHome => self.needs.hunger = 0.0,
         }
+    }
+
+    /// Can be sighted hoarding: at the market grabbing, or anywhere on the way home.
+    /// The walk to the market looks like going to eat, so it doesn't count.
+    pub fn is_hoarding(&self) -> bool {
+        matches!(
+            self.doing,
+            Doing::Busy(Action::Hoard, _) | Doing::Walking(Action::CarryHome, _) | Doing::Busy(Action::CarryHome, _)
+        )
     }
 }

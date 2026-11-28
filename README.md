@@ -96,7 +96,7 @@ flowchart LR
         S2["agent.rs<br/>Agent · Needs · Beliefs · Station<br/>utility AI choose() / finish()"]:::built
         S3["world.rs<br/>64×48 tile grid · 19 buildings<br/>room_of() · BFS path()"]:::built
         S4["rng.rs<br/>SplitMix64"]:::built
-        S5["rumor.rs<br/>RumorEngine · Claim arena<br/>plant() · hearing_check built<br/>sightings · drift · bark todo!()"]:::stub
+        S5["rumor.rs<br/>RumorEngine · Claim arena<br/>plant() · hearing_check · record_sightings built<br/>drift · bark todo!()"]:::stub
         S6["Tier scheduler + promotion<br/>T0 crowd · T1 townsfolk · T2 key figures"]:::planned
         S7["Websocket server<br/>JSON snapshots / deltas"]:::planned
         S8["Brain request queue<br/>priorities · timeouts · fallback"]:::planned
@@ -194,8 +194,9 @@ classDiagram
         +Beliefs beliefs
         +Doing doing
         +new(home, pos, rng) Agent
-        +choose(rng) Action
+        +choose(rng, may_hoard, urgency) Action
         +finish(action)
+        +is_hoarding() bool
     }
     class Needs {
         +f32 hunger
@@ -230,6 +231,8 @@ classDiagram
         Socialize
         Pray
         Wander
+        Hoard
+        CarryHome
     }
     class World {
         +Vec~Tile~ tiles
@@ -479,7 +482,7 @@ flowchart TD
     N["Needs rise, each capped at 1.0<br/>hunger += 3.0 / day → full in 1/3 day<br/>fatigue += 1.5 / day → full in 2/3 day<br/>loneliness += 2.0 / day → full in 1/2 day"]:::built --> F
     F["Fear eases toward its target<br/>target = urgency × (0.2 + 0.8 × faith)<br/>fear += (target − fear) × 8 / day"]:::built --> S
     S{"agent.doing"}:::built
-    S -- "Idle" --> I1["action = choose(rng)<br/>goal = goal(world, agent, action, rng)<br/>world.path(pos, goal)"]:::built
+    S -- "Idle" --> I1["action = choose(rng, may_hoard, urgency)<br/>may_hoard: truth.hoarder, gate passed<br/>goal = goal(world, agent, action, rng)<br/>world.path(pos, goal)"]:::built
     I1 -- "Some(path)" --> I2["Walking(action, path)"]:::built
     I1 -- "None" --> I3["Idle"]:::built
     S -- "Walking" --> W1{"tick % 3 == 0?<br/>STEP_TICKS = 3 → 0.3 s/tile"}:::built
@@ -493,7 +496,7 @@ flowchart TD
     I2 & I3 & W4 & W5 & B1 & B2 --> NEXT{"more agents?"}:::built
     NEXT -- "yes" --> L
     NEXT -- "no" --> RUM
-    RUM["every CHECK_EVERY = 10 ticks:<br/>rumors.hearing_check (built)<br/>record_sightings · drift_earned (todo)"]:::stub --> BR
+    RUM["every CHECK_EVERY = 10 ticks:<br/>rumors.hearing_check · record_sightings (built)<br/>drift_earned (todo)"]:::stub --> BR
     BR["at the tick boundary, apply brain replies in a fixed order<br/>and append each to the replay log"]:::planned --> TIER["tier scheduling, promotion and demotion"]:::planned --> OUT["broadcast a delta to the websocket clients"]:::planned
 ```
 
@@ -517,6 +520,8 @@ stateDiagram-v2
         Socialize · tavern door · day/12 · loneliness = 0
         Pray · chapel door · day/16 · fear × 0.5
         Wander · random grass/road tile · 0 ticks
+        Hoard · market door · day/48 · then CarryHome
+        CarryHome · own home door · 0 ticks · hunger = 0
     end note
 ```
 
@@ -529,9 +534,10 @@ stateDiagram-v2
 | Socialize | `0.8 × loneliness` | Tavern door (40, 26) | 1/12 | 200 / 400 / 1000 | `loneliness = 0` |
 | Pray | `0.8 × faith × (0.2 + fear) + 0.1 × loyalty` | Chapel door (32, 10) | 1/16 | 150 / 300 / 750 | `fear × 0.5` |
 | Wander | `0.2` (constant floor) | Random grass or road tile | 0 | 0 | — |
-| *Hoard* (planned) | rises with urgency; only starts if agents in sight ≤ ⌊urgency × 3⌋ | Market, then home | — | — | carries supplies, can be sighted |
+| Hoard | `hunger × (0.5 + urgency)`, only for `truth.hoarder` and only if agents in sight ≤ ⌊urgency × 3⌋ | Market door | 1/48 | 50 / 100 / 250 | walks home as `CarryHome` (never chosen directly) |
+| CarryHome | — | Own home door | 0 | 0 | `hunger = 0`; sighted the whole way, like at the market |
 
-Feedback loop: the countdown pushes **fear** up, fear makes **Pray** score higher, and praying **halves fear**. A believer (high faith) heads for the chapel more and more often as zero approaches. The ASCII view shows each agent as the letter of its current action: `E`at, `S`leep, s`O`cialize, `P`ray, `W`ander, `I`dle.
+Feedback loop: the countdown pushes **fear** up, fear makes **Pray** score higher, and praying **halves fear**. A believer (high faith) heads for the chapel more and more often as zero approaches. The ASCII view shows each agent as the letter of its current action: `E`at, `S`leep, s`O`cialize, `P`ray, `W`ander, `H`oard, `C`arry home, `I`dle.
 
 ### 8. Rumor engine: the hearing check (Phase 3, stubbed)
 

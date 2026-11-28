@@ -1,9 +1,8 @@
 //! Rumor engine (Phase 3). Design: docs/rumor-engine.md; why claims are arena nodes: ADR 0004.
 //!
-//! Skeleton only: types, tuning numbers, and signatures. Every `todo!()` is a piece to build.
-//! Nothing here is called from `Sim::tick` yet, so the existing tests still pass.
+//! The hearing check and sightings run from `Sim::tick`. Every remaining `todo!()` is a piece to build.
 
-// Remove once the hearing check is wired into `Sim::tick`.
+// Remove once the remaining `todo!()`s are built and wired in.
 #![allow(dead_code, unused_variables)]
 
 use crate::agent::{Action, Agent, Doing, Station};
@@ -116,10 +115,15 @@ impl RumorEngine {
     /// The new node is a root: no parent, no teller, and `root` is its own id, so every hop that
     /// spreads from it traces back here. Used by tests, `--plant`, and later the god role and omens.
     pub fn plant(&mut self, tick: u64, agent: usize, proposition: Proposition, confidence: f32) -> ClaimId {
+        self.push_root(tick, agent, Origin::Plant, proposition, confidence)
+    }
+
+    /// A new root (plant or sighting) in `agent`'s head.
+    fn push_root(&mut self, tick: u64, agent: usize, origin: Origin, proposition: Proposition, confidence: f32) -> ClaimId {
         // The id is the index the node is about to land at, so read it before pushing.
         let claim_id = self.claims.len();
         self.claims.push(Claim {
-            origin: Origin::Plant,
+            origin,
             parent: None,
             root: claim_id,
             teller: None,
@@ -339,8 +343,32 @@ impl RumorEngine {
     /// at most one per proposition, and pay the +0.10 bonus to whoever told them a matching claim.
     /// No penalty here: a sighting that contradicts a claim heard earlier costs nothing, and one
     /// that came first is charged in `apply_hop`, so a disagreement is never charged twice.
+    /// The bonus goes to the teller of every hop claim the watcher holds with the same proposition.
+    /// Draws nothing from the rng, so it can't shift the hearing check's draw order.
     pub fn record_sightings(&mut self, tick: u64, world: &World, agents: &[Agent]) {
-        todo!("needs Action::Hoard first")
+        for h in 0..agents.len() {
+            if !agents[h].is_hoarding() {
+                continue;
+            }
+            let seen = Proposition::Hoarder(h);
+            for w in 0..agents.len() {
+                if w == h || !in_range(world, agents[h].pos, agents[w].pos, SIGHT_RANGE) {
+                    continue;
+                }
+                let claims = &self.claims;
+                let held = self.known[w].iter().map(|k| &claims[k.claim]);
+                if held.clone().any(|c| c.origin == Origin::Sighting && c.proposition == seen) {
+                    continue;
+                }
+                // Claim first, sighting second: collect the tellers before writing `earned`.
+                // Only hops have a teller, so plants and sightings pay nobody.
+                let tellers: Vec<usize> = held.filter(|c| c.proposition == seen).filter_map(|c| c.teller).collect();
+                for t in tellers {
+                    self.earned[t] = (self.earned[t] + SIGHTING_MATCH_BONUS).min(EARNED_MAX);
+                }
+                self.push_root(tick, w, Origin::Sighting, seen, SIGHTING_CONFIDENCE);
+            }
+        }
     }
 
     /// Move earned influence toward 0 by `EARNED_DRIFT_PER_DAY`, scaled to the ticks elapsed.
@@ -740,7 +768,12 @@ mod tests {
         r.plant(0, 0, Proposition::DateMiscalculated(true), 1.0);
         assert!(r.collect_hops(&world, &agents).is_empty());
         assert_eq!(r.known[0][0].times_told, 0, "nobody heard it");
-        // TODO: "no sighting" through the wall once record_sightings exists.
+
+        // The same pair, with the one inside hoarding: no sighting through the wall either.
+        let mut r = RumorEngine::new(1, 2);
+        agents[0].doing = Doing::Busy(Action::Hoard, 5);
+        r.record_sightings(0, &world, &agents);
+        assert!(r.known[1].is_empty(), "walls block sight");
     }
 
     #[test]
@@ -777,8 +810,58 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn one_sighting_per_watcher() {
-        todo!()
+        let world = World::town();
+        // 0 hoards; 1 watches from 2 tiles; 2 is 10 tiles off, out of sight.
+        let (mut r, mut agents) = town(3);
+        for (a, x) in agents.iter_mut().zip([4, 6, 14]) {
+            a.pos = row(x);
+        }
+
+        // Walking to the market looks like going to eat: nothing seen.
+        agents[0].doing = Doing::Walking(Action::Hoard, vec![row(3)]);
+        r.record_sightings(0, &world, &agents);
+        assert!(r.known[1].is_empty());
+
+        // Grabbing at the market, then carrying home: seen once, however long 1 watches.
+        agents[0].doing = Doing::Busy(Action::Hoard, 5);
+        for tick in 1..=5 {
+            r.record_sightings(tick, &world, &agents);
+        }
+        agents[0].doing = Doing::Walking(Action::CarryHome, vec![row(3)]);
+        r.record_sightings(6, &world, &agents);
+
+        assert_eq!(r.known[1].len(), 1, "one sighting per proposition");
+        let c = &r.claims[r.known[1][0].claim];
+        assert_eq!((c.origin, c.proposition, c.teller), (Origin::Sighting, Proposition::Hoarder(0), None));
+        assert_eq!((c.root, c.tick, c.confidence), (r.known[1][0].claim, 1, SIGHTING_CONFIDENCE));
+        assert!(r.known[0].is_empty(), "the hoarder doesn't sight themselves");
+        assert!(r.known[2].is_empty(), "out of sight");
+    }
+
+    #[test]
+    fn sighting_pays_matching_teller_only() {
+        let world = World::town();
+        // 0 tells 1 a claim; then 1 watches 2 hoarding from 2 tiles. 0 stands off out of sight.
+        let setup = |accused| {
+            let (mut r, mut agents) = town(4);
+            for (a, x) in agents.iter_mut().zip([14, 6, 4, 14]) {
+                a.pos = row(x);
+            }
+            agents[2].doing = Doing::Busy(Action::Hoard, 5);
+            r.plant(0, 0, Proposition::Hoarder(accused), 1.0);
+            tell(&mut r, &agents, 0, 1);
+            r.record_sightings(1, &world, &agents);
+            r
+        };
+
+        // The claim named 2 and 1 saw 2: claim first, sighting second pays 0.
+        let r = setup(2);
+        assert!((r.earned[0] - SIGHTING_MATCH_BONUS).abs() < 1e-6);
+
+        // The claim named 3 but 1 saw 2: a sighting after the claim costs nothing.
+        let r = setup(3);
+        assert_eq!(r.earned[0], 0.0);
+        assert_eq!(r.known[1].len(), 2, "the hop and the sighting");
     }
 }

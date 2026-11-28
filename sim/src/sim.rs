@@ -1,6 +1,6 @@
 use crate::agent::{Action, Agent, Doing, SPECIAL_STATIONS};
 use crate::rng::Rng;
-use crate::rumor::{ClaimId, Proposition, RumorEngine, CHECK_EVERY};
+use crate::rumor::{in_range, ClaimId, Proposition, RumorEngine, CHECK_EVERY, SIGHT_RANGE};
 use crate::world::{BuildingKind, Pos, World};
 
 pub const TICKS_PER_SEC: u64 = 10;
@@ -136,10 +136,19 @@ impl Sim {
         let tick = self.tick;
         let day = self.preset.ticks_per_day() as f32;
         let urgency = self.urgency();
+        // Counted before the loop, from start-of-tick positions: the loop holds `agents` mutably.
+        // Only an idle hoarder is about to choose, so only then is it worth counting.
+        let hoarder = self.truth.hoarder.filter(|&h| matches!(self.agents[h].doing, Doing::Idle)).filter(|&h| {
+            let here = self.agents[h].pos;
+            let watchers = (0..self.agents.len())
+                .filter(|&i| i != h && in_range(&self.world, here, self.agents[i].pos, SIGHT_RANGE))
+                .count();
+            hoard_gate(watchers, urgency)
+        });
         let Sim { agents, world, rng, .. } = self;
 
         // Fixed agent order: every rng draw happens in the same sequence each run.
-        for a in agents.iter_mut() {
+        for (id, a) in agents.iter_mut().enumerate() {
             // Needs fill over a fraction of a day, so behavior per day is the same for every preset.
             let n = &mut a.needs;
             n.hunger = (n.hunger + 3.0 / day).min(1.0);
@@ -152,7 +161,7 @@ impl Sim {
 
             a.doing = match std::mem::replace(&mut a.doing, Doing::Idle) {
                 Doing::Idle => {
-                    let action = a.choose(rng);
+                    let action = a.choose(rng, hoarder == Some(id), urgency);
                     let goal = goal(world, a, action, rng);
                     match world.path(a.pos, goal) {
                         Some(path) => Doing::Walking(action, path),
@@ -167,6 +176,11 @@ impl Sim {
                     }
                     if path.is_empty() { Doing::Busy(action, duration(action, day)) } else { Doing::Walking(action, path) }
                 }
+                // Before the general `Busy(_, 0)` arm, which would otherwise catch it.
+                Doing::Busy(Action::Hoard, 0) => match world.path(a.pos, world.buildings[a.home].door) {
+                    Some(path) => Doing::Walking(Action::CarryHome, path),
+                    None => Doing::Idle,
+                },
                 Doing::Busy(action, 0) => {
                     a.finish(action);
                     Doing::Idle
@@ -177,12 +191,14 @@ impl Sim {
 
         if tick % CHECK_EVERY == 0 {
             self.rumors.hearing_check(tick, &self.world, &self.agents);
-            // TODO(phase 3): `record_sightings(...)` and `drift_earned(...)` here once built.
+            // After the hops, so a claim told this check and sighted now pays the match bonus.
+            self.rumors.record_sightings(tick, &self.world, &self.agents);
+            // TODO(phase 3): `drift_earned(...)` here once built.
         }
     }
 
     /// Text frame of the town: `#` wall, `+` door, `=` road, `.` grass, and each agent
-    /// as the letter of what it's doing (Eat, Sleep, sOcialize, Pray, Wander, Idle).
+    /// as the letter of what it's doing (Eat, Sleep, sOcialize, Pray, Wander, Hoard, Carry home, Idle).
     /// A stand-in view until the Three.js client lands in Phase 5.
     pub fn render(&self) -> String {
         use crate::world::{Tile, H, W};
@@ -209,6 +225,8 @@ impl Sim {
                 Some(Action::Socialize) => 'O',
                 Some(Action::Pray) => 'P',
                 Some(Action::Wander) => 'W',
+                Some(Action::Hoard) => 'H',
+                Some(Action::CarryHome) => 'C',
                 None => 'I',
             };
         }
@@ -216,7 +234,7 @@ impl Sim {
     }
 
     pub fn summary(&self) -> String {
-        let mut counts = [0; 5];
+        let mut counts = [0; 7];
         for a in &self.agents {
             if let Doing::Walking(act, _) | Doing::Busy(act, _) = a.doing {
                 counts[act as usize] += 1;
@@ -225,7 +243,7 @@ impl Sim {
         let fear = self.agents.iter().map(|a| a.beliefs.fear).sum::<f32>() / self.agents.len() as f32;
         let secs = self.countdown_left() / TICKS_PER_SEC;
         format!(
-            "tick {} | day {}/{} | countdown {}:{:02} | eat {} sleep {} socialize {} pray {} wander {} | fear {:.2}",
+            "tick {} | day {}/{} | countdown {}:{:02} | eat {} sleep {} socialize {} pray {} wander {} hoard {} | fear {:.2}",
             self.tick,
             (self.tick / self.preset.ticks_per_day() + 1).min(self.preset.shape().0),
             self.preset.shape().0,
@@ -236,6 +254,7 @@ impl Sim {
             counts[2],
             counts[3],
             counts[4],
+            counts[5] + counts[6],
             fear,
         )
     }
@@ -248,7 +267,15 @@ fn goal(world: &World, a: &Agent, action: Action, rng: &mut Rng) -> Pos {
         Action::Socialize => world.door_of(BuildingKind::Tavern),
         Action::Pray => world.door_of(BuildingKind::Chapel),
         Action::Wander => world.random_open(rng),
+        Action::Hoard => world.door_of(BuildingKind::Market),
+        Action::CarryHome => world.buildings[a.home].door,
     }
+}
+
+/// Sneaky: the hoarder only starts with at most `floor(urgency × 3)` agents in sight,
+/// so early in the run nobody may be watching at all.
+pub fn hoard_gate(watchers: usize, urgency: f32) -> bool {
+    watchers <= (urgency * 3.0).floor() as usize
 }
 
 /// How long an action keeps the agent busy at its destination, in ticks.
@@ -259,6 +286,8 @@ fn duration(action: Action, day: f32) -> u64 {
         Action::Socialize => 1.0 / 12.0,
         Action::Pray => 1.0 / 16.0,
         Action::Wander => 0.0,
+        Action::Hoard => 1.0 / 48.0,
+        Action::CarryHome => 0.0,
     };
     (day * frac) as u64
 }
@@ -309,6 +338,37 @@ mod tests {
         let mut small = stations(42, 3);
         small.sort_by_key(|st| *st as u8);
         assert_eq!(small, [Station::Prophet, Station::Priest, Station::TavernKeeper]);
+    }
+
+    #[test]
+    fn hoard_gate_allows_more_eyes_as_urgency_rises() {
+        assert!(hoard_gate(0, 0.0));
+        assert!(!hoard_gate(1, 0.33), "floor(0.99) = 0: nobody may watch");
+        assert!(hoard_gate(1, 0.34));
+        assert!(hoard_gate(3, 1.0));
+        assert!(!hoard_gate(4, 1.0));
+    }
+
+    #[test]
+    fn only_the_hidden_hoarder_hoards_and_gets_sighted() {
+        let mut sim = Sim::new(42, Preset::Quick, 50);
+        let hoarder = sim.truth.hoarder.expect("seed 42 has a hoarder");
+        let mut hoarded = false;
+        for _ in 0..Preset::Quick.total_ticks() {
+            sim.tick();
+            for (id, a) in sim.agents.iter().enumerate() {
+                if let Doing::Walking(act, _) | Doing::Busy(act, _) = a.doing {
+                    if matches!(act, Action::Hoard | Action::CarryHome) {
+                        assert_eq!(id, hoarder, "tick {}", sim.tick);
+                        hoarded = true;
+                    }
+                }
+            }
+        }
+        assert!(hoarded, "the hoarder hoards at least once in a whole run");
+        let sightings = sim.rumors.claims.iter().filter(|c| c.origin == crate::rumor::Origin::Sighting);
+        assert!(sightings.clone().count() > 0, "someone saw it");
+        assert!(sightings.clone().all(|c| c.proposition == Proposition::Hoarder(hoarder)));
     }
 
     const TEN_MINUTES: u64 = 10 * 60 * TICKS_PER_SEC;
