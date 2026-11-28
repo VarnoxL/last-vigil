@@ -88,6 +88,17 @@ Two phases. First, collect `Vec<PendingHop>` reading only the state at the start
 - **Sneaky:** the hoarder starts only if the number of agents in sight is ≤ `floor(urgency × 3)`. They can still be seen on the walk home.
 - **Sighting:** an agent in sight range of a hoarding agent gets a `Sighting` claim `Hoarder(id)` at high confidence (about 0.95). Each agent gets at most one sighting per proposition.
 
+Decided when building it (`.scratch/hoard/spec.md`):
+
+- **Only `truth.hoarder` hoards.** With no hoarder in the truth, nobody does.
+- **Two legs, two actions.** `Hoard` walks to the market and is busy there for 1/48 of a day. When it ends, `Sim::tick` paths home as `CarryHome`, which is never chosen directly. `finish(CarryHome)` sets `hunger = 0`, because they eat from the stash.
+- **Utility** `hunger × (0.5 + urgency)`: a greedy trip to the market, below Eat before urgency 0.5 and above it after. An urgency-only score lost to hunger at every chance, since the hoarder only decides about 8 times a day and usually wakes up hungry.
+- **The gate** is counted from start-of-tick positions, only while the hoarder is `Idle`.
+- **Visible** while `Busy(Hoard)` at the market and for the whole `CarryHome` leg. The walk to the market looks like going to eat.
+- **Sampled** in `record_sightings` every `CHECK_EVERY` ticks, right after the hearing check. The +0.10 match bonus goes to the teller of every hop claim the watcher holds with the same proposition.
+- **Draw order:** Hoard is a candidate in `choose` only for the hoarder, and only when the gate passes, so nobody else draws an extra jitter. The hoarder's extra draw still shifts later sim-rng draws, so seeded runs change from the first time it's offered. `record_sightings` draws nothing.
+- On seed 42 (Quick), the gate passes about 5 times a run, all at the home door after sleeping. The market and tavern are too crowded.
+
 ## Belief feedback (build last)
 
 On accepting a claim with confidence `c`:
