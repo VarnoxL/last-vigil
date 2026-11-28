@@ -79,6 +79,7 @@ Two phases. First, collect `Vec<PendingHop>` reading only the state at the start
 - **Reject the hop** if the result is below 0.1, or if the hearer already holds the same proposition with the same root.
 - **Keep duplicates** that come from a different root; corroboration fires on them.
 - **Mutation:** `p = 0.05 + 0.15 × teller fear`. It swaps only `Hoarder(id)`: to a random agent in the teller's sight range, otherwise any agent. Yes/no claims never flip. The mutated node keeps `parent` and `root`.
+- **Draw order** (rumor rng, tellers in id order): an empty `known` draws nothing; then the speak roll; then the listener pick when not broadcasting; then `pick_claim`; then `mutate` (only `Hoarder` draws). A teller with nobody in range stops after the speak roll, and nothing counts as told. One mutation roll per telling, so a broadcast's hearers all get the same version. Changing this order changes every seeded run.
 
 ## Hoarding and sightings
 
