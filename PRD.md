@@ -97,9 +97,9 @@ This project is a game-like simulation of a haunted medieval town built around a
 **Depends on:** Phase 2
 **Done when:** a claim planted in a headless run spreads by proximity, mutates in confidence per hop, and can be dumped as an ancestry tree.
 **Design:** [docs/rumor-engine.md](docs/rumor-engine.md) (formulas, numbers, tests); ADR 0004.
-- [ ] Claim data structure and spatial hearing rules
+- [x] Claim data structure and spatial hearing rules
 - [ ] Stations and influence (station base, derived, earned)
-- [ ] Per-hop confidence decay and detail-swap mutation
+- [x] Per-hop confidence decay and detail-swap mutation
 - [ ] Hoard action and sightings
 - [ ] Ancestry log and JSON export (serde)
 - [ ] Unit tests for propagation and mutation
