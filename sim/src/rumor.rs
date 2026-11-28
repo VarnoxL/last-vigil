@@ -156,8 +156,41 @@ impl RumorEngine {
 
     /// Phase 1: every agent rolls `p_speak`, picks a claim, picks an audience, and computes
     /// the hearer's confidence and any mutation. Reads state only (plus the rng).
+    ///
+    /// Draw order per teller (id order): empty `known` draws nothing; then the speak roll; then
+    /// one draw for a single hearer (none when broadcasting); then `pick_claim`; then `mutate`.
+    /// Nobody in range ends it before `pick_claim`, so `times_told` isn't bumped.
     fn collect_hops(&mut self, world: &World, agents: &[Agent]) -> Vec<PendingHop> {
-        todo!()
+        let mut hops = Vec::new();
+        for t in 0..agents.len() {
+            if self.known[t].is_empty() {
+                continue;
+            }
+            let inf = self.influence(agents, t);
+            let p = self.p_speak(agents, t);
+            if !self.rng.chance(p) {
+                continue;
+            }
+            let here = agents[t].pos;
+            let mut audience: Vec<usize> = (0..agents.len())
+                .filter(|&h| h != t && in_range(world, here, agents[h].pos, HEAR_RANGE))
+                .collect();
+            if audience.is_empty() {
+                continue;
+            }
+            if inf < BROADCAST_INFLUENCE {
+                audience = vec![audience[self.rng.below(audience.len())]];
+            }
+            let parent = self.pick_claim(t, inf).expect("known is non-empty");
+            let heard = self.claims[parent].proposition;
+            // One roll per tell: everyone at a broadcast hears the same version.
+            let proposition = self.mutate(heard, t, world, agents);
+            for hearer in audience {
+                let confidence = self.hearer_confidence(parent, proposition, inf, agents, hearer);
+                hops.push(PendingHop { parent, teller: t, hearer, confidence, proposition });
+            }
+        }
+        hops
     }
 
     /// Phase 2: every hop that was spoken bumps the teller's `times_told` and pays the sighting
@@ -173,7 +206,9 @@ impl RumorEngine {
             let t = hop.teller;
             self.earned[t] = (self.earned[t] + SIGHTING_CONTRADICT_PENALTY).max(EARNED_MIN);
         }
-        if hop.confidence < MIN_CONFIDENCE || self.holds(hop.hearer, hop.proposition, root) {
+        // The accused knows they aren't hoarding, so they never take `Hoarder(themselves)`.
+        let accuses_hearer = hop.proposition == Proposition::Hoarder(hop.hearer);
+        if hop.confidence < MIN_CONFIDENCE || accuses_hearer || self.holds(hop.hearer, hop.proposition, root) {
             return;
         }
         // Corroboration: the hearer already holds this proposition, necessarily from another root
@@ -209,8 +244,22 @@ impl RumorEngine {
     }
 
     /// Weighted random over `known[teller]` by `confidence / (1 + times_told × (1 − influence))`.
+    /// One `rng.unit()` draw, none if `known[teller]` is empty.
     fn pick_claim(&mut self, teller: usize, influence: f32) -> Option<ClaimId> {
-        todo!()
+        if self.known[teller].is_empty() {
+            return None;
+        }
+        let u = self.rng.unit();
+        let known = &self.known[teller];
+        let weight = |k: &Known| self.claims[k.claim].confidence / (1.0 + k.times_told as f32 * (1.0 - influence));
+        let mut r = u * known.iter().map(weight).sum::<f32>();
+        for k in known {
+            r -= weight(k);
+            if r < 0.0 {
+                return Some(k.claim);
+            }
+        }
+        known.last().map(|k| k.claim) // float rounding left r at or just above 0
     }
 
     /// `teller_conf × HOP_DECAY × trust × lean`, capped at 1. Takes the proposition as heard,
@@ -254,16 +303,35 @@ impl RumorEngine {
     }
 
     /// With `p = 0.05 + 0.15 × teller fear`, swap a `Hoarder(id)` to someone in the teller's sight
-    /// (or anyone). Yes/no propositions never change.
+    /// (or anyone). Never the teller or the one already accused. Yes/no propositions never change
+    /// and draw nothing; a `Hoarder` draws one roll, plus one pick if it mutates.
     fn mutate(&mut self, proposition: Proposition, teller: usize, world: &World, agents: &[Agent]) -> Proposition {
-        todo!()
+        let Proposition::Hoarder(named) = proposition else { return proposition };
+        if !self.rng.chance(0.05 + 0.15 * agents[teller].beliefs.fear) {
+            return proposition;
+        }
+        let other = |i: &usize| *i != teller && *i != named;
+        let here = agents[teller].pos;
+        let mut pool: Vec<usize> =
+            (0..agents.len()).filter(other).filter(|&i| in_range(world, here, agents[i].pos, SIGHT_RANGE)).collect();
+        if pool.is_empty() {
+            pool = (0..agents.len()).filter(other).collect();
+        }
+        if pool.is_empty() {
+            return proposition;
+        }
+        Proposition::Hoarder(pool[self.rng.below(pool.len())])
     }
 
     /// Does `agent` already hold this proposition from this root?
+    /// Compares the kind, not the detail: a root mutated to name someone else is still the same
+    /// rumor, so a hearer keeps only the first version of it. Yes/no kinds never mutate, so for
+    /// them this is the same as comparing the whole proposition.
     fn holds(&self, agent: usize, proposition: Proposition, root: ClaimId) -> bool {
+        let kind = std::mem::discriminant(&proposition);
         self.known[agent].iter().any(|k| {
             let c = &self.claims[k.claim];
-            c.proposition == proposition && c.root == root
+            std::mem::discriminant(&c.proposition) == kind && c.root == root
         })
     }
 
@@ -459,6 +527,29 @@ mod tests {
     }
 
     #[test]
+    fn one_version_per_root_and_never_self() {
+        let (mut r, agents) = town(5);
+        let root = r.plant(0, 0, Proposition::Hoarder(1), 1.0);
+        let hop = |parent, hearer, proposition| PendingHop { parent, teller: 0, hearer, confidence: 0.5, proposition };
+
+        // Two mutations of one root reach agent 4: only the first is kept.
+        r.apply_hop(0, hop(root, 4, Proposition::Hoarder(2)), &agents);
+        r.apply_hop(0, hop(root, 4, Proposition::Hoarder(3)), &agents);
+        assert_eq!(r.known[4].len(), 1);
+        assert_eq!(r.claims[r.known[4][0].claim].proposition, Proposition::Hoarder(2));
+
+        // A different root naming someone else is a separate rumor: kept.
+        let other = r.plant(0, 0, Proposition::Hoarder(3), 1.0);
+        r.apply_hop(0, hop(other, 4, Proposition::Hoarder(3)), &agents);
+        assert_eq!(r.known[4].len(), 2);
+
+        // The accused never takes the claim about themselves, but it still counts as told.
+        r.apply_hop(0, hop(root, 1, Proposition::Hoarder(1)), &agents);
+        assert!(r.known[1].is_empty());
+        assert_eq!(r.known[0][0].times_told, 3);
+    }
+
+    #[test]
     fn matching_sighting_cancels_contradiction() {
         let (mut r, _) = town(2);
         for seen in [5, 9] {
@@ -537,10 +628,80 @@ mod tests {
         assert_eq!(r.earned[0], 0.0);
     }
 
+    /// Fear 1, loneliness 1, `Busy(Socialize)`: speak base 0.6 × 2, so any influence ≥ 1/3 speaks
+    /// for sure. A townsfolk lands at 0.35. `p_speak` checks only the action, not the position, so
+    /// the tests can stand anywhere.
+    fn force_speech(a: &mut Agent) {
+        a.beliefs.fear = 1.0;
+        a.needs.loneliness = 1.0;
+        a.doing = Doing::Busy(Action::Socialize, 5);
+    }
+
+    /// Outdoor grass north of the first homes, clear in a straight line along y = 17.
+    fn row(x: u16) -> Pos {
+        Pos { x, y: 17 }
+    }
+
     #[test]
-    #[ignore]
     fn mutation_rate_and_ancestry() {
-        todo!()
+        let world = World::town();
+        let (mut r, mut agents) = town(5);
+        // 0 tells, accusing 1. 2 and 3 are in sight of 0; 4 is 10 tiles away.
+        for (a, x) in agents.iter_mut().zip([4, 5, 6, 8, 14]) {
+            a.pos = row(x);
+        }
+        assert!(!in_range(&world, row(4), row(14), SIGHT_RANGE));
+        agents[0].beliefs.fear = 1.0;
+
+        let n = 10_000;
+        let mut swapped = 0;
+        for _ in 0..n {
+            match r.mutate(Proposition::Hoarder(1), 0, &world, &agents) {
+                Proposition::Hoarder(1) => {}
+                Proposition::Hoarder(to) => {
+                    assert!(to == 2 || to == 3, "only agents in sight, never the teller: {to}");
+                    swapped += 1;
+                }
+                p => panic!("changed kind: {p:?}"),
+            }
+            assert_eq!(r.mutate(Proposition::DoomIsReal(true), 0, &world, &agents), Proposition::DoomIsReal(true));
+        }
+        let rate = swapped as f32 / n as f32;
+        assert!((rate - 0.20).abs() < 0.02, "fear 1 should mutate about 20%: {rate}");
+
+        // Nobody in sight: fall back to anyone but the teller and the accused.
+        agents[2].pos = row(20);
+        agents[3].pos = row(22);
+        let mut swapped = 0;
+        for _ in 0..200 {
+            match r.mutate(Proposition::Hoarder(1), 0, &world, &agents) {
+                Proposition::Hoarder(1) => {}
+                Proposition::Hoarder(to) => {
+                    assert!((2..=4).contains(&to), "fallback picked the teller: {to}");
+                    swapped += 1;
+                }
+                p => panic!("changed kind: {p:?}"),
+            }
+        }
+        assert!(swapped > 0, "fallback never swapped");
+
+        // Ancestry: run real checks until a mutated hop lands; it keeps parent and root.
+        // Three agents, so there is someone besides the teller and the accused to swap to.
+        let (mut r, mut agents) = town(3);
+        for (a, x) in agents.iter_mut().zip([4, 5, 6]) {
+            a.pos = row(x);
+        }
+        force_speech(&mut agents[0]);
+        let root = r.plant(0, 0, Proposition::Hoarder(1), 1.0);
+        for tick in 0..200 {
+            r.hearing_check(tick, &world, &agents);
+        }
+        let hops: Vec<_> = r.claims.iter().filter(|c| c.origin == Origin::Hop).collect();
+        assert!(hops.iter().any(|c| c.proposition != Proposition::Hoarder(1)), "no mutation in 200 checks");
+        for c in hops {
+            assert_eq!(c.root, root);
+            assert!(c.parent.is_some());
+        }
     }
 
     #[test]
@@ -570,13 +731,49 @@ mod tests {
         assert!(!in_range(&world, p(4, 20), p(4, 22), HEAR_RANGE));
         // Clear line, but 4 tiles apart.
         assert!(!in_range(&world, p(4, 17), p(8, 17), HEAR_RANGE));
-        // TODO: extend to the doc's "no hop and no sighting" once the hearing check exists.
+
+        // A sure speaker on home 0's floor, a listener just outside the wall: no hop.
+        let (mut r, mut agents) = town(2);
+        agents[0].pos = p(4, 19);
+        agents[1].pos = p(4, 17);
+        force_speech(&mut agents[0]);
+        r.plant(0, 0, Proposition::DateMiscalculated(true), 1.0);
+        assert!(r.collect_hops(&world, &agents).is_empty());
+        assert_eq!(r.known[0][0].times_told, 0, "nobody heard it");
+        // TODO: "no sighting" through the wall once record_sightings exists.
     }
 
     #[test]
-    #[ignore]
     fn broadcast_vs_single_hearer() {
-        todo!()
+        let world = World::town();
+        let p = Proposition::DateMiscalculated(true);
+        // 0 tells; 1..=3 within 3 tiles; 4 is 4 tiles away.
+        let setup = |station| {
+            let (mut r, mut agents) = town(5);
+            for (a, x) in agents.iter_mut().zip([6, 3, 7, 9, 10]) {
+                a.pos = row(x);
+            }
+            force_speech(&mut agents[0]);
+            agents[0].station = station;
+            agents[0].beliefs.loyalty = 0.5;
+            r.plant(0, 0, p, 1.0);
+            (r, agents)
+        };
+
+        let (mut r, agents) = setup(Station::Prophet);
+        assert!((r.influence(&agents, 0) - 0.8).abs() < 1e-6);
+        let hops = r.collect_hops(&world, &agents);
+        let mut heard: Vec<_> = hops.iter().map(|h| h.hearer).collect();
+        heard.sort();
+        assert_eq!(heard, [1, 2, 3], "broadcast reaches everyone in range, not 4");
+
+        let (mut r, agents) = setup(Station::Townsfolk);
+        assert!((r.influence(&agents, 0) - 0.35).abs() < 1e-6);
+        for _ in 0..50 {
+            let hops = r.collect_hops(&world, &agents);
+            assert_eq!(hops.len(), 1, "one hearer below BROADCAST_INFLUENCE");
+            assert!((1..=3).contains(&hops[0].hearer));
+        }
     }
 
     #[test]

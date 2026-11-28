@@ -1,6 +1,6 @@
 use crate::agent::{Action, Agent, Doing, SPECIAL_STATIONS};
 use crate::rng::Rng;
-use crate::rumor::{ClaimId, Proposition, RumorEngine};
+use crate::rumor::{ClaimId, Proposition, RumorEngine, CHECK_EVERY};
 use crate::world::{BuildingKind, Pos, World};
 
 pub const TICKS_PER_SEC: u64 = 10;
@@ -175,8 +175,10 @@ impl Sim {
             };
         }
 
-        // TODO(phase 3): once implemented, every `rumor::CHECK_EVERY` ticks run
-        // `self.rumors.hearing_check(...)`, `record_sightings(...)`, and `drift_earned(...)`.
+        if tick % CHECK_EVERY == 0 {
+            self.rumors.hearing_check(tick, &self.world, &self.agents);
+            // TODO(phase 3): `record_sightings(...)` and `drift_earned(...)` here once built.
+        }
     }
 
     /// Text frame of the town: `#` wall, `+` door, `=` road, `.` grass, and each agent

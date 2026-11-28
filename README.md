@@ -96,7 +96,7 @@ flowchart LR
         S2["agent.rs<br/>Agent · Needs · Beliefs · Station<br/>utility AI choose() / finish()"]:::built
         S3["world.rs<br/>64×48 tile grid · 19 buildings<br/>room_of() · BFS path()"]:::built
         S4["rng.rs<br/>SplitMix64"]:::built
-        S5["rumor.rs<br/>RumorEngine · Claim arena<br/>plant() works · rest todo!()"]:::stub
+        S5["rumor.rs<br/>RumorEngine · Claim arena<br/>plant() · hearing_check built<br/>sightings · drift · bark todo!()"]:::stub
         S6["Tier scheduler + promotion<br/>T0 crowd · T1 townsfolk · T2 key figures"]:::planned
         S7["Websocket server<br/>JSON snapshots / deltas"]:::planned
         S8["Brain request queue<br/>priorities · timeouts · fallback"]:::planned
@@ -416,7 +416,7 @@ flowchart TD
     classDef stub fill:#4a3b12,stroke:#ffb300,color:#fff8e1
 
     SEED(["seed: u64"]):::built --> RNG1["Sim rng = Rng::new(seed)"]:::built
-    SEED --> RNG2["Rumor rng = Rng::new(seed XOR 0x52_554D_4F52)<br/>'RUMOR' · its own stream, so rumor draws<br/>never shift the movement draws"]:::stub
+    SEED --> RNG2["Rumor rng = Rng::new(seed XOR 0x52_554D_4F52)<br/>'RUMOR' · its own stream, so rumor draws<br/>never shift the movement draws"]:::built
 
     RNG1 --> D1{"chance 0.5<br/>doom_is_real?"}:::built
     D1 -- "yes, p=0.50" --> TR["fraud = false<br/>miscalculated = false"]:::built
@@ -493,7 +493,7 @@ flowchart TD
     I2 & I3 & W4 & W5 & B1 & B2 --> NEXT{"more agents?"}:::built
     NEXT -- "yes" --> L
     NEXT -- "no" --> RUM
-    RUM["every CHECK_EVERY = 10 ticks:<br/>rumors.hearing_check · record_sightings · drift_earned"]:::stub --> BR
+    RUM["every CHECK_EVERY = 10 ticks:<br/>rumors.hearing_check (built)<br/>record_sightings · drift_earned (todo)"]:::stub --> BR
     BR["at the tick boundary, apply brain replies in a fixed order<br/>and append each to the replay log"]:::planned --> TIER["tier scheduling, promotion and demotion"]:::planned --> OUT["broadcast a delta to the websocket clients"]:::planned
 ```
 
@@ -543,22 +543,23 @@ flowchart TD
     classDef built fill:#1f3d2b,stroke:#4caf50,color:#e8f5e9
     classDef rej fill:#4a1a1a,stroke:#e57373,color:#ffebee
 
-    START(["hearing_check(tick, world, agents)<br/>every CHECK_EVERY = 10 ticks"]):::stub --> P1
+    START(["hearing_check(tick, world, agents)<br/>every CHECK_EVERY = 10 ticks"]):::built --> P1
 
     subgraph COLLECT["Phase 1 · collect_hops · reads the state at the start of the check only"]
-        P1["for each teller"]:::stub --> INF["influence = clamp(station.base + derived + earned, 0, 1)<br/>derived = 0.2 × (loyalty − 0.5) for the prophet and priest<br/>derived = 0.1 × (fear − 0.5) for everyone else<br/>computed fresh each time, never stored"]:::built
+        P1["for each teller, in id order<br/>(skip with no rng draw if known is empty)"]:::built --> INF["influence = clamp(station.base + derived + earned, 0, 1)<br/>derived = 0.2 × (loyalty − 0.5) for the prophet and priest<br/>derived = 0.1 × (fear − 0.5) for everyone else<br/>computed fresh each time, never stored"]:::built
         INF --> PS{"roll p_speak<br/>(0.1 + 0.3·fear + 0.2·loneliness)<br/>× 2 if Busy(Socialize) at the tavern<br/>× (0.5 + influence), cap 1"}:::built
         PS -- "silent" --> P1
-        PS -- "speaks" --> PC["pick_claim: weighted over known[teller] by<br/>confidence / (1 + times_told × (1 − influence))<br/>influential agents don't tire of repeating themselves"]:::stub
-        PC --> AUD{"influence ≥ 0.7?"}:::stub
-        AUD -- "yes: broadcast" --> ALL["every agent in hearing range"]:::stub
-        AUD -- "no" --> ONE["one random agent in hearing range"]:::stub
-        ALL & ONE --> RANGE["in_range: ≤ HEAR_RANGE 3 tiles,<br/>same room (same building, or both outdoors),<br/>no wall between them"]:::built
-        RANGE --> CONF["hearer_conf = teller_conf × 0.85 × trust × lean, cap 1<br/>trust = 0.5 + teller influence<br/>lean: DoomIsReal(true) → 0.5 + faith<br/>ProphetIsFraud(true) → 1.5 − faith<br/>otherwise 1.0 · × 0.3 if a sighting contradicts it"]:::built
-        CONF --> MUT{"mutate? p = 0.05 + 0.15 × teller fear"}:::stub
-        MUT -- "Hoarder(id)" --> SW["swap id to an agent in the teller's sight,<br/>within SIGHT_RANGE 6, else anyone"]:::stub
-        MUT -- "yes/no proposition" --> KEEP["never flips"]:::stub
-        SW & KEEP --> PH["push PendingHop"]:::stub
+        PS -- "speaks" --> RANGE["audience = everyone else with in_range: ≤ HEAR_RANGE 3 tiles,<br/>same room (same building, or both outdoors),<br/>no wall between them"]:::built
+        RANGE -- "nobody there" --> P1
+        RANGE --> AUD{"influence ≥ 0.7?"}:::built
+        AUD -- "yes: broadcast" --> ALL["the whole audience"]:::built
+        AUD -- "no" --> ONE["one random member"]:::built
+        ALL & ONE --> PC["pick_claim: weighted over known[teller] by<br/>confidence / (1 + times_told × (1 − influence))<br/>influential agents don't tire of repeating themselves"]:::built
+        PC --> MUT{"mutate once per telling<br/>p = 0.05 + 0.15 × teller fear"}:::built
+        MUT -- "Hoarder(id)" --> SW["swap id to an agent in the teller's sight,<br/>within SIGHT_RANGE 6, else anyone<br/>never the teller or the one accused"]:::built
+        MUT -- "yes/no proposition" --> KEEP["never flips, no rng draw"]:::built
+        SW & KEEP --> CONF["per hearer: hearer_conf = teller_conf × 0.85 × trust × lean, cap 1<br/>trust = 0.5 + teller influence<br/>lean: DoomIsReal(true) → 0.5 + faith<br/>ProphetIsFraud(true) → 1.5 − faith<br/>otherwise 1.0 · × 0.3 if a sighting contradicts it"]:::built
+        CONF --> PH["push PendingHop"]:::built
     end
 
     PH --> AP0
@@ -567,7 +568,7 @@ flowchart TD
         AP0["teller times_told += 1 · −0.10 earned to teller<br/>if the hearer's sighting contradicts it<br/>(every spoken hop, accepted or not)"]:::built
         AP0 --> AP{"confidence below MIN_CONFIDENCE 0.1?"}:::built
         AP -- "yes" --> DROP1["drop"]:::rej
-        AP -- "no" --> SR{"hearer already holds the<br/>same proposition from the same root?"}:::built
+        AP -- "no" --> SR{"Hoarder(hearer), or hearer already holds<br/>the same kind from the same root?<br/>(Hoarder ignores who is named)"}:::built
         SR -- "yes" --> DROP2["drop: A→B→A adds nothing"]:::rej
         SR -- "no" --> PUSH["claims.push(Claim origin Hop, parent, root kept)<br/>known[hearer].push"]:::built
         PUSH --> COR{"same proposition already held<br/>from a different root?"}:::built

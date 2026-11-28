@@ -76,9 +76,11 @@ Two phases. First, collect `Vec<PendingHop>` reading only the state at the start
   - `trust = 0.5 + teller influence`
   - `lean`: `DoomIsReal(true)` → `0.5 + faith`; `ProphetIsFraud(true)` → `1.5 − faith`; otherwise `1.0`
   - Multiply `lean` by 0.3 if the hearer holds a sighting of the same kind with a different detail and none matching it.
-- **Reject the hop** if the result is below 0.1, or if the hearer already holds the same proposition with the same root.
+- **Reject the hop** if the result is below 0.1, if it is `Hoarder(hearer)` (the accused knows better), or if the hearer already holds a claim of the same kind with the same root. For `Hoarder` "same kind" ignores who is named, so a hearer keeps only the first version of a mutated rumor. A rejected hop still counts as told.
 - **Keep duplicates** that come from a different root; corroboration fires on them.
 - **Mutation:** `p = 0.05 + 0.15 × teller fear`. It swaps only `Hoarder(id)`: to a random agent in the teller's sight range, otherwise any agent. Yes/no claims never flip. The mutated node keeps `parent` and `root`.
+- **Draw order** (rumor rng, tellers in id order): an empty `known` draws nothing; then the speak roll; then the listener pick when not broadcasting; then `pick_claim`; then `mutate` (only `Hoarder` draws). A teller with nobody in range stops after the speak roll, and nothing counts as told. One mutation roll per telling, so a broadcast's hearers all get the same version. Changing this order changes every seeded run.
+- **Chain length:** the 0.1 cutoff implies about 5 hops at trust 0.8, but tellers with influence ≥ 0.676 have `0.85 × trust ≥ 1`, so they don't decay a claim. Through them, chains run 9–11 hops in smoke runs. This is intended (kept in PR #5).
 
 ## Hoarding and sightings
 
