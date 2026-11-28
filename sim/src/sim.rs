@@ -175,8 +175,8 @@ impl Sim {
             };
         }
 
-        if self.tick % CHECK_EVERY == 0 {
-            self.rumors.hearing_check(self.tick, &self.world, &self.agents);
+        if tick % CHECK_EVERY == 0 {
+            self.rumors.hearing_check(tick, &self.world, &self.agents);
             // TODO(phase 3): `record_sightings(...)` and `drift_earned(...)` here once built.
         }
     }

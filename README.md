@@ -568,7 +568,7 @@ flowchart TD
         AP0["teller times_told += 1 · −0.10 earned to teller<br/>if the hearer's sighting contradicts it<br/>(every spoken hop, accepted or not)"]:::built
         AP0 --> AP{"confidence below MIN_CONFIDENCE 0.1?"}:::built
         AP -- "yes" --> DROP1["drop"]:::rej
-        AP -- "no" --> SR{"hearer already holds the<br/>same proposition from the same root?"}:::built
+        AP -- "no" --> SR{"Hoarder(hearer), or hearer already holds<br/>the same kind from the same root?<br/>(Hoarder ignores who is named)"}:::built
         SR -- "yes" --> DROP2["drop: A→B→A adds nothing"]:::rej
         SR -- "no" --> PUSH["claims.push(Claim origin Hop, parent, root kept)<br/>known[hearer].push"]:::built
         PUSH --> COR{"same proposition already held<br/>from a different root?"}:::built

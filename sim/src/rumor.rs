@@ -206,7 +206,9 @@ impl RumorEngine {
             let t = hop.teller;
             self.earned[t] = (self.earned[t] + SIGHTING_CONTRADICT_PENALTY).max(EARNED_MIN);
         }
-        if hop.confidence < MIN_CONFIDENCE || self.holds(hop.hearer, hop.proposition, root) {
+        // The accused knows they aren't hoarding, so they never take `Hoarder(themselves)`.
+        let accuses_hearer = hop.proposition == Proposition::Hoarder(hop.hearer);
+        if hop.confidence < MIN_CONFIDENCE || accuses_hearer || self.holds(hop.hearer, hop.proposition, root) {
             return;
         }
         // Corroboration: the hearer already holds this proposition, necessarily from another root
@@ -322,10 +324,14 @@ impl RumorEngine {
     }
 
     /// Does `agent` already hold this proposition from this root?
+    /// Compares the kind, not the detail: a root mutated to name someone else is still the same
+    /// rumor, so a hearer keeps only the first version of it. Yes/no kinds never mutate, so for
+    /// them this is the same as comparing the whole proposition.
     fn holds(&self, agent: usize, proposition: Proposition, root: ClaimId) -> bool {
+        let kind = std::mem::discriminant(&proposition);
         self.known[agent].iter().any(|k| {
             let c = &self.claims[k.claim];
-            c.proposition == proposition && c.root == root
+            std::mem::discriminant(&c.proposition) == kind && c.root == root
         })
     }
 
@@ -521,6 +527,29 @@ mod tests {
     }
 
     #[test]
+    fn one_version_per_root_and_never_self() {
+        let (mut r, agents) = town(5);
+        let root = r.plant(0, 0, Proposition::Hoarder(1), 1.0);
+        let hop = |parent, hearer, proposition| PendingHop { parent, teller: 0, hearer, confidence: 0.5, proposition };
+
+        // Two mutations of one root reach agent 4: only the first is kept.
+        r.apply_hop(0, hop(root, 4, Proposition::Hoarder(2)), &agents);
+        r.apply_hop(0, hop(root, 4, Proposition::Hoarder(3)), &agents);
+        assert_eq!(r.known[4].len(), 1);
+        assert_eq!(r.claims[r.known[4][0].claim].proposition, Proposition::Hoarder(2));
+
+        // A different root naming someone else is a separate rumor: kept.
+        let other = r.plant(0, 0, Proposition::Hoarder(3), 1.0);
+        r.apply_hop(0, hop(other, 4, Proposition::Hoarder(3)), &agents);
+        assert_eq!(r.known[4].len(), 2);
+
+        // The accused never takes the claim about themselves, but it still counts as told.
+        r.apply_hop(0, hop(root, 1, Proposition::Hoarder(1)), &agents);
+        assert!(r.known[1].is_empty());
+        assert_eq!(r.known[0][0].times_told, 3);
+    }
+
+    #[test]
     fn matching_sighting_cancels_contradiction() {
         let (mut r, _) = town(2);
         for seen in [5, 9] {
@@ -599,8 +628,9 @@ mod tests {
         assert_eq!(r.earned[0], 0.0);
     }
 
-    /// Fear 1, loneliness 1, at the tavern: speak base 0.6 × 2, so any influence ≥ 1/3 speaks for sure.
-    /// A townsfolk lands at 0.35.
+    /// Fear 1, loneliness 1, `Busy(Socialize)`: speak base 0.6 × 2, so any influence ≥ 1/3 speaks
+    /// for sure. A townsfolk lands at 0.35. `p_speak` checks only the action, not the position, so
+    /// the tests can stand anywhere.
     fn force_speech(a: &mut Agent) {
         a.beliefs.fear = 1.0;
         a.needs.loneliness = 1.0;
@@ -642,9 +672,18 @@ mod tests {
         // Nobody in sight: fall back to anyone but the teller and the accused.
         agents[2].pos = row(20);
         agents[3].pos = row(22);
+        let mut swapped = 0;
         for _ in 0..200 {
-            assert!(matches!(r.mutate(Proposition::Hoarder(1), 0, &world, &agents), Proposition::Hoarder(1..=4)));
+            match r.mutate(Proposition::Hoarder(1), 0, &world, &agents) {
+                Proposition::Hoarder(1) => {}
+                Proposition::Hoarder(to) => {
+                    assert!((2..=4).contains(&to), "fallback picked the teller: {to}");
+                    swapped += 1;
+                }
+                p => panic!("changed kind: {p:?}"),
+            }
         }
+        assert!(swapped > 0, "fallback never swapped");
 
         // Ancestry: run real checks until a mutated hop lands; it keeps parent and root.
         // Three agents, so there is someone besides the teller and the accused to swap to.
